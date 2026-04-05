@@ -16,8 +16,8 @@ This guide has three parts:
 
 If you are coming back and just need the practical bits:
 
-- [Step 3: Create your first job](#step-3-create-your-first-job)
-- [Step 5: Check on your job](#step-5-check-on-your-job)
+- [Step 5: Create your first job](#step-5-create-your-first-job)
+- [Step 7: Check on your job](#step-7-check-on-your-job)
 - [Diagnose problems in the right order](#4-diagnose-problems-in-the-right-order)
 - [Recommended beginner workflow](#9-recommended-beginner-workflow)
 
