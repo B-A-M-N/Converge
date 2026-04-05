@@ -18,6 +18,10 @@
 
 ---
 
+**New to CLI agents or automation?** Read the [Beginner's Guide](FOR_BEGINNERS.md) first.
+
+---
+
 ## Why I Built This
 
 I work almost exclusively through CLI agents — Claude, Gemini, Codex, and others. When I discovered the `/loop` command in Claude Code, my immediate reaction was: *this should exist for every agent, not just one.* At the same time, I kept running into the limits of what a session-bound loop can actually do. It dies when the session ends. It can't be triggered by another agent. There's no history, no stop conditions, no way to pause or recover.
@@ -73,19 +77,9 @@ Converge is a deterministic job execution engine built around four contracts:
 
 ### Job Lifecycle
 
-```
-PENDING → ACTIVE → RUNNING → EVALUATED ─┬─→ CONTINUE (next tick)
-                                         ├─→ STOP (condition met)
-                                         └─→ ERROR (logged, schedule resumes)
-```
-
-Jobs can be externally transitioned at any point:
-
-```
-ACTIVE ──→ PAUSED ──→ ACTIVE
-ACTIVE ──→ CANCELLED
-PAUSED ──→ CANCELLED
-```
+<p align="center">
+  <img src="assets/job-lifecycle.png" alt="Job Lifecycle State Machine" width="720" />
+</p>
 
 ---
 
@@ -96,6 +90,12 @@ PAUSED ──→ CANCELLED
 </p>
 
 The daemon runs independently of any agent session. Jobs are defined over a Unix domain socket, executed on schedule via subprocess, and evaluated against stop conditions after each run. All state is written to `~/.converge/`. If the daemon restarts, all jobs and run history are recovered from SQLite.
+
+**Cross-agent triggering** — one agent can enqueue a job that runs a different agent entirely:
+
+<p align="center">
+  <img src="assets/cross-agent-trigger.png" alt="Cross-Agent Trigger Flow" width="720" />
+</p>
 
 ---
 
