@@ -1,10 +1,20 @@
-# Converge
+<p align="center">
+  <img src="assets/logo.png" alt="Converge" width="480" />
+</p>
 
-**A persistent recurring task engine for CLI AI agents.**
+<p align="center">
+  <strong>A persistent, agent-aware task execution engine with stop-condition convergence.</strong>
+</p>
 
-Schedule work. Enforce stop conditions. Converge on outcomes.
-
-> v2.0 · SQLite-backed · Zero cloud dependencies · Auto-launching daemon
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-white.svg" />
+  <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-green" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.0.0-blue" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-785%2F787-brightgreen" />
+  <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite-lightblue" />
+  <img alt="Cloud" src="https://img.shields.io/badge/cloud-none-brightgreen" />
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" />
+</p>
 
 ---
 
@@ -13,14 +23,6 @@ Schedule work. Enforce stop conditions. Converge on outcomes.
 I work almost exclusively through CLI agents — Claude, Gemini, Codex, and others. When I discovered the `/loop` command in Claude Code, my immediate reaction was: *this should exist for every agent, not just one.* At the same time, I kept running into the limits of what a session-bound loop can actually do. It dies when the session ends. It can't be triggered by another agent. There's no history, no stop conditions, no way to pause or recover.
 
 Converge is the answer to both questions at once: a universal recurring task primitive that any CLI agent can use, built to be more capable than a simple loop from the ground up.
-
----
-
-## What It Is
-
-`converge` is a local daemon that gives any CLI AI agent — Claude, Gemini, Codex, Kimi, OpenCode — a proper recurring task primitive. You define a job once. The daemon owns the schedule, runs the agent on each tick, evaluates stop conditions, and maintains a full audit log — persistently, across restarts, independent of any active session.
-
-**The problem it solves:** You want an agent to "check every 5 minutes until the tests pass." Today, you either babysit it yourself or hack something together with a shell script. Converge handles it cleanly, with structured logs and automatic stop conditions.
 
 ---
 
@@ -38,6 +40,80 @@ Converge is the answer to both questions at once: a universal recurring task pri
 | Stop conditions | No | Yes |
 | Multiple concurrent jobs | No | Yes |
 | Actor attribution | No | Yes |
+
+---
+
+## Why Not Just Cron?
+
+Cron schedules commands. Converge schedules *tasks that converge toward outcomes*.
+
+| | Cron | Converge |
+|---|---|---|
+| Runs arbitrary commands | Yes | Yes |
+| Agent-aware execution | No | Yes |
+| Structured stop conditions | No | Yes |
+| Persistent run history | No | Yes |
+| Job lifecycle (pause / resume / cancel) | No | Yes |
+| Cross-agent triggering | No | Yes |
+| Stateful evaluation between runs | No | Yes |
+| Crash recovery | No | Yes |
+
+Cron fires and forgets. Converge fires, evaluates, and decides whether to fire again.
+
+---
+
+## System Model
+
+Converge is a deterministic job execution engine built around four contracts:
+
+1. **Job Definition** — A task, interval, agent adapter, and optional stop condition. Immutable after creation.
+2. **Execution** — One run per tick, enforced by a single-writer lease. No overlapping executions.
+3. **Evaluation** — After each run, stop conditions are evaluated deterministically against the output.
+4. **State** — All transitions are event-sourced. Every run produces a persisted result.
+
+### Job Lifecycle
+
+```
+PENDING → ACTIVE → RUNNING → EVALUATED ─┬─→ CONTINUE (next tick)
+                                         ├─→ STOP (condition met)
+                                         └─→ ERROR (logged, schedule resumes)
+```
+
+Jobs can be externally transitioned at any point:
+
+```
+ACTIVE ──→ PAUSED ──→ ACTIVE
+ACTIVE ──→ CANCELLED
+PAUSED ──→ CANCELLED
+```
+
+---
+
+## How It Works
+
+<p align="center">
+  <img src="assets/architecture.png" alt="Converge Architecture" width="720" />
+</p>
+
+The daemon runs independently of any agent session. Jobs are defined over a Unix domain socket, executed on schedule via subprocess, and evaluated against stop conditions after each run. All state is written to `~/.converge/`. If the daemon restarts, all jobs and run history are recovered from SQLite.
+
+---
+
+## Execution Guarantees
+
+- **At-most-one active execution per job** — lease enforcement prevents concurrent runs of the same job
+- **No silent failures** — every run produces a persisted result: `success`, `failed`, or `error`
+- **Deterministic stop evaluation** — conditions are evaluated against the full run output after each tick, not approximated
+- **Ordered event log** — all state transitions are recorded with actor identity and timestamp
+- **Crash-safe scheduling** — if the daemon dies mid-run, the lease expires and the job is rescheduled cleanly on restart
+
+## Failure Semantics
+
+- **Agent crash** → run marked `failed`, exit code recorded, next scheduled tick proceeds normally
+- **Daemon crash** → all job state recovered from SQLite on restart; stale leases are reclaimed automatically
+- **Adapter not found** → run marked `error` immediately, logged, schedule continues
+- **Stop condition parse error** → job creation rejected at definition time, never silently ignored
+- **Socket unavailable** → CLI auto-relaunches the daemon and retries before surfacing an error
 
 ---
 
@@ -62,41 +138,6 @@ converge logs <job-id>
 ```
 
 The daemon launches automatically in the background on first use. You do not need to start it manually.
-
----
-
-## How It Works
-
-```
-CLI command  /  Claude Code Plugin
-              │
-              ▼
-       Unix Socket (IPC)
-              │
-              ▼
-       Converge Daemon
-       ├── Scheduler (interval-based)
-       ├── Lease Manager (single-writer)
-       ├── Adapter (launches the agent CLI)
-       ├── Stop Condition Evaluator
-       └── SQLite (persistence + event log)
-```
-
-The daemon runs independently of any agent session. Jobs are defined over a Unix domain socket, executed on schedule via subprocess, and evaluated against stop conditions after each run. All state is written to `~/.converge/`. If the daemon restarts, all jobs and run history are recovered from SQLite.
-
----
-
-## Guarantees
-
-| Property | Detail |
-|---|---|
-| **Persistent scheduling** | Jobs survive session ends, restarts, and crashes |
-| **Autolaunch** | Daemon starts automatically on first CLI use — no manual setup required |
-| **Event sourcing** | Every state transition is recorded with actor identity and timestamp |
-| **Lease enforcement** | Atomic single-writer lock prevents a job from running concurrently with itself |
-| **Safe IPC** | Unix domain socket with `0600` permissions, framing protocol, and version negotiation |
-| **Crash recovery** | Orphan detection and stale-lease sweeper run on daemon startup |
-| **No cloud** | All data stays on your machine in `~/.converge/` |
 
 ---
 
@@ -168,7 +209,7 @@ Resume a paused job and return it to the active schedule.
 
 ### `converge cancel <job-id>`
 
-Permanently remove a job from the schedule. Run history is preserved in `~/.converge/`.
+Permanently remove a job from the schedule. Run history is preserved.
 
 ---
 
@@ -180,7 +221,7 @@ Trigger an immediate out-of-schedule execution. The regular schedule continues a
 
 ### `converge explain <job-id>`
 
-Show a human-readable explanation of a job's current state, configuration, and recent run history.
+Human-readable explanation of a job's current state, configuration, and recent run history.
 
 ---
 
@@ -256,24 +297,17 @@ The `claude` adapter supports session continuation — subsequent runs resume th
 
 ## Data Storage
 
-All data is stored locally:
+<p align="center">
+  <img src="assets/data-storage.png" alt="Converge Data Storage" width="600" />
+</p>
 
-```
-~/.converge/
-├── converge.db        # SQLite — jobs, runs, leases, events
-├── converge.sock      # Unix socket (created when daemon is running)
-├── daemon.log         # Daemon stdout/stderr
-└── logs/
-    └── <job-id>/
-        ├── <run-id>.log
-        └── ...
-```
+All data is stored locally in `~/.converge/`. Nothing leaves your machine.
 
 ---
 
 ## Daemon Management
 
-The daemon launches automatically on first use. For production or always-on setups, you can run it under a process supervisor.
+The daemon launches automatically on first use. For production or always-on setups, run it under a process supervisor.
 
 ### systemd (Linux)
 
@@ -405,3 +439,4 @@ which claude      # verify the CLI binary is on your PATH
 | Storage | SQLite, local only |
 | Platforms | Linux, macOS |
 | Node.js | 20+ |
+| License | MIT |
