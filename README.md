@@ -1,191 +1,223 @@
 # Converge
 
-**Universal recurring task engine for CLI AI agents.**
+**A persistent recurring task engine for CLI AI agents.**
 
 Schedule work. Enforce stop conditions. Converge on outcomes.
 
-> v2.0 Release Candidate · 785/787 tests passing · SQLite-backed · Zero cloud dependencies
+> v2.0 · SQLite-backed · Zero cloud dependencies · Auto-launching daemon
+
+---
+
+## Why I Built This
+
+I work almost exclusively through CLI agents — Claude, Gemini, Codex, and others. When I discovered the `/loop` command in Claude Code, my immediate reaction was: *this should exist for every agent, not just one.* At the same time, I kept running into the limits of what a session-bound loop can actually do. It dies when the session ends. It can't be triggered by another agent. There's no history, no stop conditions, no way to pause or recover.
+
+Converge is the answer to both questions at once: a universal recurring task primitive that any CLI agent can use, built to be more capable than a simple loop from the ground up.
 
 ---
 
 ## What It Is
 
-`converge` is a local daemon that gives CLI AI agents — Gemini, Codex, Claude, Kimi, OpenCode — a proper recurring task primitive. Instead of agents retrying work in their own context windows or being re-prompted by hand, Converge owns the schedule, enforces bounded execution, and stops automatically when conditions are met.
+`converge` is a local daemon that gives any CLI AI agent — Claude, Gemini, Codex, Kimi, OpenCode — a proper recurring task primitive. You define a job once. The daemon owns the schedule, runs the agent on each tick, evaluates stop conditions, and maintains a full audit log — persistently, across restarts, independent of any active session.
 
-**The problem it solves:** You want an agent to "check every 5 minutes until the tests pass." Today, you either stay in the loop yourself or hack something together with a shell script. Converge handles it — persistently, across restarts, with a full audit log.
+**The problem it solves:** You want an agent to "check every 5 minutes until the tests pass." Today, you either babysit it yourself or hack something together with a shell script. Converge handles it cleanly, with structured logs and automatic stop conditions.
+
+---
+
+## Converge vs. `/loop`
+
+| | `/loop` (Claude Code) | Converge |
+|---|---|---|
+| Survives session end | No | Yes |
+| Survives Claude restart | No | Yes |
+| Works with Gemini, Codex, etc. | No | Yes |
+| External trigger (`run-now`) | No | Yes |
+| Another agent can enqueue it | No | Yes |
+| Job state (pause / resume / cancel) | No | Yes |
+| Run history and logs | No | Yes |
+| Stop conditions | No | Yes |
+| Multiple concurrent jobs | No | Yes |
+| Actor attribution | No | Yes |
 
 ---
 
 ## Quick Start
 
 ```bash
+# Install globally from the repo root
 npm install -g .
 
-# Start the daemon
-converge daemon &
+# Run any command — the daemon starts automatically on first use
+converge ls
 
-# Create a job: run gemini every 5 minutes until exit code 0
-converge add "run tests" "*/5 * * * *" \
-  --cli gemini \
-  --stop '{"type":"exitCode","code":0}'
+# Create a job: ask claude to run tests every 5 minutes until they pass
+converge add --task "run the integration test suite and fix any failures" \
+             --every 5m \
+             --cli claude \
+             --stop '{"type":"exitCode","code":0}'
 
-# Check on it
+# Inspect
 converge ls
 converge logs <job-id>
 ```
+
+The daemon launches automatically in the background on first use. You do not need to start it manually.
 
 ---
 
 ## How It Works
 
 ```
-CLI / Claude Code Plugin
-        │
-        ▼
-  Unix Socket (IPC)
-        │
-        ▼
-   Converge Daemon
-   ├── Scheduler (cron)
-   ├── Lease Manager (single-writer)
-   ├── Adapter (launches the agent CLI)
-   ├── Stop Condition Evaluator
-   └── SQLite (persistence + event log)
+CLI command  /  Claude Code Plugin
+              │
+              ▼
+       Unix Socket (IPC)
+              │
+              ▼
+       Converge Daemon
+       ├── Scheduler (interval-based)
+       ├── Lease Manager (single-writer)
+       ├── Adapter (launches the agent CLI)
+       ├── Stop Condition Evaluator
+       └── SQLite (persistence + event log)
 ```
 
-The daemon runs independently of any agent session. It receives job definitions over a Unix domain socket, runs them on schedule via subprocess, evaluates stop conditions after each run, and writes structured logs to `~/.converge/`. If the daemon restarts, all state is recovered from SQLite.
+The daemon runs independently of any agent session. Jobs are defined over a Unix domain socket, executed on schedule via subprocess, and evaluated against stop conditions after each run. All state is written to `~/.converge/`. If the daemon restarts, all jobs and run history are recovered from SQLite.
 
 ---
 
-## Guaranteed Properties
+## Guarantees
 
 | Property | Detail |
 |---|---|
-| **Deterministic scheduling** | Cron-style intervals with stop conditions enforced at runtime, not best-effort |
-| **Event sourcing** | At-least-once lifecycle events — every state transition is recorded |
-| **Lease enforcement** | Atomic single-writer invariant prevents double-scheduling of the same job |
-| **Safe IPC** | Unix domain socket with `0600` permissions, version negotiation, graceful failure |
-| **Actor attribution** | All state transitions require explicit actor identity |
+| **Persistent scheduling** | Jobs survive session ends, restarts, and crashes |
+| **Autolaunch** | Daemon starts automatically on first CLI use — no manual setup required |
+| **Event sourcing** | Every state transition is recorded with actor identity and timestamp |
+| **Lease enforcement** | Atomic single-writer lock prevents a job from running concurrently with itself |
+| **Safe IPC** | Unix domain socket with `0600` permissions, framing protocol, and version negotiation |
 | **Crash recovery** | Orphan detection and stale-lease sweeper run on daemon startup |
-| **Two usage modes** | CLI daemon (`converge daemon`) or embedded library (`import { ConvergeClient }`) |
+| **No cloud** | All data stays on your machine in `~/.converge/` |
 
 ---
 
 ## CLI Reference
 
-### `converge add <task> <interval>`
+### `converge add`
 
 Create a new recurring job.
 
 ```bash
-converge add "run integration tests" "*/10 * * * *" \
-  --cli claude \
-  --stop '{"type":"exitCode","code":0}'
+converge add --task "<prompt or command>" --every <interval> [options]
 ```
 
 | Flag | Description |
 |---|---|
-| `--cli <name>` | Agent adapter to use (`claude`, `gemini`, `codex`, `kimi`, `opencode`) |
+| `--task <text>` | The task or prompt to pass to the agent on each run |
+| `--every <interval>` | How often to run — duration (`5m`, `1h`, `30s`) or cron expression |
+| `--cli <name>` | Agent adapter to use. Default: `claude` |
 | `--stop <json>` | Stop condition as JSON (see [Stop Conditions](#stop-conditions)) |
 
-The `<interval>` is a standard 5-field cron expression.
+**Examples:**
+
+```bash
+# Run every 10 minutes until tests pass
+converge add --task "run npm test and fix any failures" \
+             --every 10m --cli claude \
+             --stop '{"type":"exitCode","code":0}'
+
+# Run on a cron schedule indefinitely
+converge add --task "summarize open PRs" --every "0 9 * * 1-5" --cli gemini
+```
 
 ---
 
 ### `converge ls`
 
-List all jobs with their current state, schedule, and next run time.
+List all jobs with current state, schedule, and next run time.
+
+---
+
+### `converge status <job-id>`
+
+Get full job details as JSON.
 
 ---
 
 ### `converge logs <job-id>`
 
-View the run history for a job. Each entry includes exit code, stdout/stderr paths, start/end times, and stop condition evaluation result.
+View the run history for a job. Each entry includes status, start/end times, and exit code.
 
 ```bash
-converge logs abc-123
-converge logs abc-123 --json   # raw JSON output
+converge logs <job-id>
+converge logs <job-id> --json   # raw JSON
 ```
-
----
-
-### `converge get <job-id>`
-
-Get the full job definition and metadata as JSON.
 
 ---
 
 ### `converge pause <job-id>`
 
-Pause a job. The job remains in the database but the scheduler will skip it until resumed.
+Pause a job. The scheduler skips it until resumed. Any run already in progress finishes.
 
 ---
 
 ### `converge resume <job-id>`
 
-Resume a previously paused job.
+Resume a paused job and return it to the active schedule.
 
 ---
 
 ### `converge cancel <job-id>`
 
-Permanently delete a job and its schedule. Run history is preserved in `~/.converge/logs/`.
+Permanently remove a job from the schedule. Run history is preserved in `~/.converge/`.
 
 ---
 
 ### `converge run-now <job-id>`
 
-Trigger an immediate out-of-schedule execution. The regular cron schedule continues afterwards.
+Trigger an immediate out-of-schedule execution. The regular schedule continues afterwards.
+
+---
+
+### `converge explain <job-id>`
+
+Show a human-readable explanation of a job's current state, configuration, and recent run history.
 
 ---
 
 ### `converge doctor`
 
-Active environment probe. Checks adapter availability, subprocess execution, database connectivity, and filesystem access.
-
-```
-[DOCTOR] Active Environment Probe
-────────────────────────────────────────
-Adapters:       ✓ claude: ok, gemini: ok
-Subprocess:     ✓ ok
-Database:       ✓ ok
-Filesystem:     ✓ ok
-────────────────────────────────────────
-Overall:      HEALTHY
-```
+Active environment probe. Checks adapter availability, database connectivity, and filesystem access.
 
 ---
 
 ### `converge daemon`
 
-Start the background daemon process. Listens on a Unix socket and manages all scheduled jobs.
+Start the daemon in the foreground. Under normal use this is unnecessary — the daemon launches automatically. Use this for debugging or to run it under a process supervisor.
 
 ```bash
 converge daemon
 ```
 
-The socket path is `$XDG_RUNTIME_DIR/converge.sock` or `/tmp/converge-<uid>.sock` as fallback. Override with `CONVERGE_SOCKET_PATH`.
+The socket is created at `~/.converge/converge.sock`. Override with `CONVERGE_SOCKET_PATH`.
 
 ---
 
 ## Stop Conditions
 
-Stop conditions determine when a job should stop running. Pass them as JSON to `--stop`.
+Stop conditions tell Converge when a job is done. Pass them as JSON to `--stop`.
 
 ### Exit Code
-
-Stop when the agent exits with a specific code.
 
 ```json
 {"type": "exitCode", "code": 0}
 ```
 
-### Stdout Match
+### Output Match
 
 Stop when the agent's stdout matches a regex pattern.
 
 ```json
-{"type": "stdoutMatches", "pattern": "merged"}
+{"type": "stdoutMatches", "pattern": "all tests passed"}
 ```
 
 ### Compound
@@ -203,53 +235,45 @@ Combine conditions with `all` (AND) or `any` (OR).
 }
 ```
 
-If no stop condition is provided, the job runs indefinitely until manually cancelled.
+If no stop condition is provided, the job runs on its schedule until manually cancelled.
 
 ---
 
 ## Supported Adapters
 
-Converge can run any CLI AI agent as the executor. The adapter is responsible for launching the process, capturing output, and resuming sessions.
-
-| Adapter | CLI | Continuation |
+| Adapter | CLI invoked | Notes |
 |---|---|---|
-| `claude` | `claude` | Session resume via `--resume` |
-| `gemini` | `gemini` | Subprocess per run |
-| `codex` | `codex` | Subprocess per run |
-| `kimi` | `kimi` | Subprocess per run |
-| `opencode` | `opencode` | Subprocess per run |
-| `test` / `echo` | `echo` | For testing and development |
+| `claude` | `claude` | Supports session continuation via `--resume` |
+| `gemini` | `gemini` | New subprocess per run |
+| `codex` | `codex` | New subprocess per run |
+| `kimi` | `kimi` | New subprocess per run |
+| `opencode` | `opencode` | New subprocess per run |
+| `test` | `echo` | For local testing and development |
 
-The `claude` adapter supports session continuation — subsequent runs resume the previous conversation rather than starting fresh.
+The `claude` adapter supports session continuation — subsequent runs resume the previous conversation context rather than starting fresh.
 
 ---
 
 ## Data Storage
 
-All data is stored locally in `~/.converge/`:
+All data is stored locally:
 
 ```
 ~/.converge/
-├── converge.db        # SQLite database (jobs, runs, events, leases)
-├── daemon.log         # Daemon process log
+├── converge.db        # SQLite — jobs, runs, leases, events
+├── converge.sock      # Unix socket (created when daemon is running)
+├── daemon.log         # Daemon stdout/stderr
 └── logs/
     └── <job-id>/
-        ├── run-001-stdout.log
-        ├── run-001-stderr.log
+        ├── <run-id>.log
         └── ...
 ```
-
-No data leaves your machine.
 
 ---
 
 ## Daemon Management
 
-### Manual (development)
-
-```bash
-converge daemon
-```
+The daemon launches automatically on first use. For production or always-on setups, you can run it under a process supervisor.
 
 ### systemd (Linux)
 
@@ -277,7 +301,8 @@ systemctl --user start converge
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -303,39 +328,18 @@ launchctl load ~/Library/LaunchAgents/com.converge.daemon.plist
 
 ## Claude Code Plugin
 
-Converge ships a native Claude Code plugin that gives Claude the ability to create and manage recurring jobs directly from a conversation.
-
-### How It Works
-
-The plugin registers two surface areas with Claude Code:
-
-- **Skill** (`skills/converge/SKILL.md`) — Teaches Claude when and how to use Converge. Activates automatically when the user asks to monitor, retry, poll, or schedule work. Claude will ask for any missing details (interval, stop condition) before creating a job.
-- **Commands** (`commands/converge-*.md`) — Slash commands that invoke the `converge` CLI via Bash. Available in any Claude Code session once the plugin is installed.
+Converge ships a native Claude Code plugin that lets Claude create and manage recurring jobs directly from a conversation — no manual CLI invocation required.
 
 ### Installation
 
 ```bash
-# Install the plugin from the repo root
 claude plugin install /path/to/converge
-
-# Reload without restarting
-/reload-plugins
 ```
 
-Verify:
+### How It Works
 
-```bash
-claude plugin list   # should show converge-loop
-```
-
-### Prerequisites
-
-The `converge` CLI must be installed and available on your `PATH` before using the plugin:
-
-```bash
-converge --version   # should return a version string
-converge doctor      # should report HEALTHY
-```
+- **Skill** (`skills/converge/SKILL.md`) — Teaches Claude when to reach for Converge. Activates automatically when the user asks to monitor, retry, poll, or schedule work.
+- **Commands** (`commands/converge-*.md`) — Slash commands that invoke the `converge` CLI. Available in any Claude Code session once installed.
 
 ### Available Commands
 
@@ -351,50 +355,6 @@ converge doctor      # should report HEALTHY
 | `/converge-logs <job-id>` | View run history |
 | `/converge-doctor` | Check system health |
 
-The daemon must be running for these commands to work. If `daemon_autostart` is enabled (default), the plugin will attempt to start it automatically.
-
-### Configuration
-
-Create `.claude/converge-loop.local.md` at your project root to configure plugin behavior:
-
-```yaml
----
-enabled: true
-daemon_autostart: true
-startup_timeout_ms: 10000
----
-```
-
-Copy `.claude/converge-loop.local.md.example` as a starting point. Restart Claude Code after changing settings.
-
-| Field | Default | Description |
-|---|---|---|
-| `enabled` | `true` | Master switch to enable/disable the plugin |
-| `daemon_autostart` | `true` | Auto-start the daemon if not running when a command is invoked |
-| `startup_timeout_ms` | `10000` | Max time (ms) to wait for daemon startup |
-
-### Plugin Structure
-
-```
-converge/
-├── .claude-plugin/
-│   └── plugin.json              # Plugin manifest
-├── commands/
-│   ├── converge.md              # /converge — command index
-│   ├── converge-add.md          # /converge-add
-│   ├── converge-ls.md           # /converge-ls
-│   ├── converge-status.md       # /converge-status
-│   ├── converge-pause.md        # /converge-pause
-│   ├── converge-resume.md       # /converge-resume
-│   ├── converge-cancel.md       # /converge-cancel
-│   ├── converge-run-now.md      # /converge-run-now
-│   ├── converge-logs.md         # /converge-logs
-│   └── converge-doctor.md       # /converge-doctor
-└── skills/
-    └── converge/
-        └── SKILL.md             # Auto-activating skill
-```
-
 ---
 
 ## Troubleshooting
@@ -403,50 +363,45 @@ converge/
 
 1. Confirm the plugin is installed: `claude plugin list` should show `converge-loop`
 2. Run `/reload-plugins` in Claude Code
-3. If that fails, restart Claude Code — plugins load on session start
+3. If that fails, restart Claude Code — plugins load at session start
 4. Verify `commands/` exists at the plugin root and contains `.md` files
-5. Check `.claude-plugin/plugin.json` is valid JSON
 
-### Daemon fails to start
+### Daemon not starting
 
 ```bash
-# Check what socket path is expected
-echo ${CONVERGE_SOCKET_PATH:-/tmp/converge-$(id -u).sock}
+# View daemon logs
+tail -f ~/.converge/daemon.log
 
-# Check if the socket already exists (daemon may already be running)
-ls -la /tmp/converge-$(id -u).sock
-
-# Try starting manually with verbose output
+# Start manually to see errors directly
 converge daemon
 
-# Check the daemon log
-tail -f ~/.converge/daemon.log
+# Check if a socket already exists (daemon may already be running)
+ls -la ~/.converge/converge.sock
 ```
 
 ### Jobs not running
 
 ```bash
 converge doctor          # verify all systems healthy
-converge ls              # check job state (paused? cancelled?)
-converge logs <job-id>   # check last run output and exit code
+converge ls              # confirm job state is active (not paused or cancelled)
+converge logs <job-id>   # inspect last run output and exit code
 ```
 
 ### Adapter not found
 
 ```bash
-converge doctor   # lists adapter availability under "Adapters"
-which claude      # verify the CLI is on your PATH
+converge doctor   # lists available adapters
+which claude      # verify the CLI binary is on your PATH
 ```
 
 ---
 
 ## Status
 
-| Property | Value |
+| | |
 |---|---|
-| Version | v2.0 Release Candidate |
-| Commit | `e07b298` |
-| Tests | 785/787 passing |
-| Skipped | 2 IPC protocol edge cases (covered by unit tests) |
-| Audit | `PHASE-32-AUDIT.md` — VALID |
-| Verdict | `PHASE-32-VERDICT.yaml` — RELEASE_CANDIDATE |
+| Version | 2.0.0 |
+| Tests | 785 / 787 passing |
+| Storage | SQLite, local only |
+| Platforms | Linux, macOS |
+| Node.js | 20+ |
