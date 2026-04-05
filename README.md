@@ -247,13 +247,19 @@ The socket is created at `~/.converge/converge.sock`. Override with `CONVERGE_SO
 
 Stop conditions tell Converge when a job is done. Pass them as JSON to `--stop`.
 
+<p align="center">
+  <img src="assets/stop-condition-evaluator.png" alt="Stop Condition Evaluation" width="720" />
+</p>
+
 ### Exit Code
+
+Stop when the agent process exits with a specific code.
 
 ```json
 {"type": "exitCode", "code": 0}
 ```
 
-### Output Match
+### Stdout Matches
 
 Stop when the agent's stdout matches a regex pattern.
 
@@ -263,7 +269,7 @@ Stop when the agent's stdout matches a regex pattern.
 
 ### Compound
 
-Combine conditions with `all` (AND) or `any` (OR).
+Combine conditions with `any` (OR) or `all` (AND).
 
 ```json
 {
@@ -271,10 +277,13 @@ Combine conditions with `all` (AND) or `any` (OR).
   "operator": "any",
   "conditions": [
     {"type": "exitCode", "code": 0},
-    {"type": "stdoutMatches", "pattern": "DONE"}
+    {"type": "stdoutMatches", "pattern": "all tests passed"}
   ]
 }
 ```
+
+With `"operator": "any"`, the job stops as soon as one condition is met.
+With `"operator": "all"`, every condition must be met on the same run.
 
 If no stop condition is provided, the job runs on its schedule until manually cancelled.
 
