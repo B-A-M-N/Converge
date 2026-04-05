@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime data
+.converge/
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# Test coverage
+coverage/
+
+# Local MCP server configuration
+.mcp.json
+
+# AI tool runtime/session data
+.gemini_security/
+.remember/
+
+# Internal development artifacts
+PHASE-*.md
+PHASE-*.yaml
+SKIPPED-TEST-ADJUDICATION.md
+PLUGIN-SETUP.md
+phases/
+.planning/
+conductor/

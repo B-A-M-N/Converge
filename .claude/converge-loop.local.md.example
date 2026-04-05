@@ -1,0 +1,29 @@
+---
+enabled: true
+daemon_autostart: true
+startup_timeout_ms: 10000
+---
+
+# Converge Plugin Settings
+
+This file configures the Converge Claude Code plugin.
+
+## Fields
+
+- `enabled` (boolean): Master switch to enable/disable the plugin. Default: `true`.
+- `daemon_autostart` (boolean): Whether the plugin automatically starts the Converge daemon if not running. Default: `true`.
+- `startup_timeout_ms` (integer): Maximum time (in milliseconds) to wait for daemon startup. Default: `10000` (10 seconds).
+
+## Example
+
+```yaml
+---
+enabled: true
+daemon_autostart: true
+startup_timeout_ms: 15000
+---
+```
+
+## Restart Required
+
+After creating or modifying this file, restart Claude Code for changes to take effect.

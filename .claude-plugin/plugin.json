@@ -1,0 +1,10 @@
+{
+  "name": "converge-loop",
+  "version": "0.1.0",
+  "description": "Recurring task engine for CLI AI agents — schedule, monitor, and stop jobs with explicit conditions",
+  "author": {
+    "name": "Converge Team"
+  },
+  "license": "MIT",
+  "keywords": ["loop", "schedule", "recurring", "polling", "monitoring", "agent", "automation"]
+}
