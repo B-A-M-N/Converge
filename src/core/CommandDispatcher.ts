@@ -1,20 +1,31 @@
 import { Job, Actor } from '../types';
 import { ControlPlane } from './ControlPlane';
+import { DispatchGateway, DispatchResult } from './DispatchGateway';
 import { JobRepository } from '../repositories/JobRepository';
 
 export class CommandDispatcher {
   static async add(params: {
     task: string;
-    interval: string;
+    interval?: string;
     stopCondition?: any;
     cli: string;
     actor?: Actor;
+    convergence_mode?: string;
+    execution_kind?: string;
+    triggers?: any[];
+    trigger_mode?: string;
+    debounce_ms?: number;
   }): Promise<{ status: string; reason: string; jobId: string }> {
     const job = await ControlPlane.createJob({
       task: params.task,
       interval_spec: params.interval,
       stopCondition: params.stopCondition,
       cli: params.cli,
+      convergence_mode: params.convergence_mode,
+      execution_kind: params.execution_kind,
+      triggers: params.triggers,
+      trigger_mode: params.trigger_mode,
+      debounce_ms: params.debounce_ms,
     }, params.actor ?? { actorId: 'cli' } as Actor);
     return { status: 'created', reason: 'Operator: add', jobId: job.id };
   }
@@ -36,6 +47,20 @@ export class CommandDispatcher {
 
   static async runNow(jobId: string, actor?: Actor): Promise<any> {
     return ControlPlane.runNow(jobId, actor ?? { actorId: 'cli' } as Actor);
+  }
+
+  static async trigger(
+    jobId: string,
+    opts: { source?: string; eventType?: string; context?: Record<string, any> } = {}
+  ): Promise<DispatchResult> {
+    const envelope = {
+      job_id: jobId,
+      source: opts.source ?? 'cli',
+      event_type: opts.eventType ?? 'manual',
+      triggered_at: new Date().toISOString(),
+      context: opts.context,
+    };
+    return DispatchGateway.submit(envelope);
   }
 
   static ls(): Job[] {
@@ -64,7 +89,7 @@ export class CommandDispatcher {
       overall.db = { ok: false, error: e.message };
     }
 
-    const { listAdapters } = require('../adapters/registry');
+    const { listAdapters } = require('../extensions/registry');
     try {
       const list = listAdapters();
       findings.push(`Adapters: ${list.length} available (${list.join(', ')})`);

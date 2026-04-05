@@ -56,7 +56,9 @@ export class RunRepository {
     for (const [key, value] of Object.entries(run)) {
       if (key === 'id') continue;
       updates.push(`${key} = ?`);
-      params.push(value ?? null);
+      // better-sqlite3 cannot bind booleans; convert to 0/1
+      const bound = value === true ? 1 : value === false ? 0 : (value ?? null);
+      params.push(bound);
     }
     if (updates.length === 0) return;
     params.push(run.id);

@@ -79,6 +79,23 @@ const MIGRATIONS = [
       );
     `,
   },
+  // Migration 18: Add convergence_mode and execution_kind to jobs
+  {
+    version: 18,
+    sql: `
+      ALTER TABLE jobs ADD COLUMN convergence_mode TEXT NOT NULL DEFAULT 'normal';
+      ALTER TABLE jobs ADD COLUMN execution_kind TEXT NOT NULL DEFAULT 'general';
+    `,
+  },
+  // Migration 19: Add trigger support columns
+  {
+    version: 19,
+    sql: `
+      ALTER TABLE jobs ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE jobs ADD COLUMN trigger_mode TEXT NOT NULL DEFAULT 'enqueue';
+      ALTER TABLE jobs ADD COLUMN debounce_ms INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
   // Migration 17: Rebuild events table to current schema
   {
     version: 17,

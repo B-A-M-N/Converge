@@ -1,8 +1,57 @@
-import type { StopCondition, NormalizedRunOutput } from '../types';
+import type { StopCondition, NormalizedRunOutput, ConvergenceMode, ExecutionKind, JobState } from '../types';
 
 export interface StopConditionResult {
   shouldStop: boolean;
   reason: string;
+}
+
+export interface ConvergencePolicy {
+  mode: ConvergenceMode;
+  kind: ExecutionKind;
+}
+
+/**
+ * Returned by detectConvergence.
+ * nextState: the state the job should move to, or null if no convergence action.
+ *   - 'repeat_detected':       identical output observed; below candidacy threshold
+ *   - 'convergence_candidate': streak meets candidacy; one confirming run away from pause
+ *   - 'paused':                confirmed convergence; auto-pause
+ *   - 'active':                diverging run — reset convergence state back to active
+ *   - null:                    no change (insufficient data or disabled)
+ */
+export interface ConvergenceTransition {
+  nextState: Extract<JobState, 'active' | 'repeat_detected' | 'convergence_candidate' | 'paused'> | null;
+  reason: string;
+}
+
+/**
+ * Per-mode streak thresholds for the three-stage state machine:
+ *   active → repeat_detected → convergence_candidate → paused
+ *
+ * repeat:    identical-run streak to enter repeat_detected (from active)
+ * candidate: streak to enter convergence_candidate
+ * confirm:   streak to auto-pause (from convergence_candidate + 1 confirming run)
+ */
+interface ConvergenceThresholds {
+  minTotalRuns: number;
+  repeat: number;
+  candidate: number;
+  confirm: number;
+}
+
+const THRESHOLDS: Record<ConvergenceMode, ConvergenceThresholds> = {
+  aggressive:   { minTotalRuns: 2, repeat: 2, candidate: 3, confirm: 4 },
+  normal:       { minTotalRuns: 4, repeat: 2, candidate: 3, confirm: 4 },
+  conservative: { minTotalRuns: 6, repeat: 3, candidate: 5, confirm: 7 },
+  disabled:     { minTotalRuns: Infinity, repeat: Infinity, candidate: Infinity, confirm: Infinity },
+};
+
+/** Normalize output for material comparison — trims whitespace, ignores cosmetic differences. */
+function materialSignature(run: NormalizedRunOutput): string {
+  const stdout = (run.stdout ?? '').trim().replace(/\r\n/g, '\n');
+  const exitCode = run.rawExitCode ?? 0;
+  const hasFileChanges = (run.filesChanged?.length ?? 0) > 0 ? 1 : 0;
+  return `${exitCode}|${hasFileChanges}|${stdout}`;
 }
 
 export function evaluateStopCondition(
@@ -102,20 +151,87 @@ function evaluateOutput(condition: StopCondition, output: NormalizedRunOutput): 
   return { shouldStop: false, reason: 'Output condition not met' };
 }
 
-function evaluateConvergence(_condition: StopCondition, output: NormalizedRunOutput): StopConditionResult {
+function evaluateConvergence(_condition: StopCondition, _output: NormalizedRunOutput): StopConditionResult {
   return { shouldStop: false, reason: 'Convergence requires previous runs' };
 }
 
+/**
+ * Three-stage convergence state machine.
+ *
+ * Given the job's current state, the latest run output, and run history, returns
+ * the next state the job should transition to — or null if no change is needed.
+ *
+ * State progression (identical runs):
+ *   active → repeat_detected → convergence_candidate → paused
+ *
+ * On any diverging run from repeat_detected or convergence_candidate:
+ *   → active (reset)
+ */
 export function detectConvergence(
+  currentJobState: JobState,
   output: NormalizedRunOutput,
-  previousRuns: NormalizedRunOutput[]
-): StopConditionResult {
-  if (previousRuns.length < 2) {
-    return { shouldStop: false, reason: 'Insufficient previous runs for convergence detection' };
+  previousRuns: NormalizedRunOutput[],
+  policy: ConvergencePolicy = { mode: 'normal', kind: 'general' }
+): ConvergenceTransition {
+  // polling and external-stateful: sameness now ≠ sameness later
+  if (policy.kind === 'polling' || policy.kind === 'external-stateful') {
+    return { nextState: null, reason: `Convergence suppressed for ${policy.kind} jobs` };
   }
-  const last = previousRuns[previousRuns.length - 1];
-  if (last.rawExitCode === output.rawExitCode && last.stdout === output.stdout) {
-    return { shouldStop: true, reason: 'Output is identical to previous run' };
+
+  const thresholds = THRESHOLDS[policy.mode];
+  const totalRuns = previousRuns.length + 1;
+
+  if (totalRuns < thresholds.minTotalRuns) {
+    return { nextState: null, reason: `Below minimum run floor (${totalRuns}/${thresholds.minTotalRuns})` };
   }
-  return { shouldStop: false, reason: 'Output differs from previous run — not converged' };
+
+  // Count trailing streak of materially identical runs (including current)
+  const currentSig = materialSignature(output);
+  let streak = 1;
+  for (let i = previousRuns.length - 1; i >= 0; i--) {
+    if (materialSignature(previousRuns[i]) === currentSig) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+
+  const isDiverging = streak === 1 && (
+    currentJobState === 'repeat_detected' || currentJobState === 'convergence_candidate'
+  );
+
+  // Diverging run resets convergence state
+  if (isDiverging) {
+    return {
+      nextState: 'active',
+      reason: `Diverging run detected — convergence state reset (was: ${currentJobState})`,
+    };
+  }
+
+  // State machine promotions
+  if (currentJobState === 'convergence_candidate' && streak >= thresholds.confirm) {
+    return {
+      nextState: 'paused',
+      reason:
+        `Convergence confirmed: ${streak} consecutive materially identical runs ` +
+        `across ${totalRuns} total (mode: ${policy.mode}, kind: ${policy.kind}). ` +
+        `No output delta, no artifact delta.`,
+    };
+  }
+
+  if ((currentJobState === 'active' || currentJobState === 'repeat_detected') && streak >= thresholds.candidate) {
+    return {
+      nextState: 'convergence_candidate',
+      reason: `Convergence candidate: ${streak} identical runs — one confirming run away from auto-pause`,
+    };
+  }
+
+  if (currentJobState === 'active' && streak >= thresholds.repeat) {
+    return {
+      nextState: 'repeat_detected',
+      reason: `Repeat detected: ${streak} consecutive identical runs (${streak}/${thresholds.candidate} for candidacy)`,
+    };
+  }
+
+  return { nextState: null, reason: 'No convergence signal' };
 }

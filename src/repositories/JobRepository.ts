@@ -9,6 +9,7 @@ function transaction<T extends (...args: any[]) => any>(fn: T): T {
 function jobRowToJob(row: any): Job {
   return {
     ...row,
+    triggers: row.triggers ? JSON.parse(row.triggers) : null,
   } as Job;
 }
 
@@ -20,7 +21,7 @@ export class JobRepository {
       cli: job.cli,
       cwd: job.cwd,
       task: job.task,
-      interval_spec: job.interval_spec,
+      interval_spec: job.interval_spec ?? '',
       timezone: job.timezone ?? null,
       session_id: job.session_id ?? null,
       actor: job.actor ?? null,
@@ -33,10 +34,15 @@ export class JobRepository {
       updated_at: job.updated_at,
       last_run_at: job.last_run_at ?? null,
       next_run_at: job.next_run_at ?? null,
+      convergence_mode: job.convergence_mode ?? 'normal',
+      execution_kind: job.execution_kind ?? 'general',
+      triggers: job.triggers ? JSON.stringify(job.triggers) : '[]',
+      trigger_mode: job.trigger_mode ?? 'enqueue',
+      debounce_ms: job.debounce_ms ?? 0,
     };
     const stmt = db.prepare(`
-      INSERT INTO jobs (id, name, cli, cwd, task, interval_spec, timezone, session_id, actor, state, stop_condition_json, max_iterations, max_failures, expires_at, created_at, updated_at, last_run_at, next_run_at)
-      VALUES (@id, @name, @cli, @cwd, @task, @interval_spec, @timezone, @session_id, @actor, @state, @stop_condition_json, @max_iterations, @max_failures, @expires_at, @created_at, @updated_at, @last_run_at, @next_run_at)
+      INSERT INTO jobs (id, name, cli, cwd, task, interval_spec, timezone, session_id, actor, state, stop_condition_json, max_iterations, max_failures, expires_at, created_at, updated_at, last_run_at, next_run_at, convergence_mode, execution_kind, triggers, trigger_mode, debounce_ms)
+      VALUES (@id, @name, @cli, @cwd, @task, @interval_spec, @timezone, @session_id, @actor, @state, @stop_condition_json, @max_iterations, @max_failures, @expires_at, @created_at, @updated_at, @last_run_at, @next_run_at, @convergence_mode, @execution_kind, @triggers, @trigger_mode, @debounce_ms)
     `);
     stmt.run(jobWithDefaults);
     StructuredEventEmitter.jobCreated(job);
@@ -54,8 +60,10 @@ export class JobRepository {
   static getDueJobs(now: string = new Date().toISOString()): Job[] {
     return db.prepare(`
       SELECT * FROM jobs
-      WHERE state = 'active'
+      WHERE state IN ('active', 'repeat_detected', 'convergence_candidate')
         AND deleted_at IS NULL
+        AND interval_spec != ''
+        AND next_run_at IS NOT NULL
         AND next_run_at <= ?
       ORDER BY next_run_at ASC
     `).all(now).map(jobRowToJob);

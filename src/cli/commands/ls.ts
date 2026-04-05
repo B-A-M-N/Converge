@@ -3,8 +3,14 @@ import { CommandDispatcher } from '../../core/CommandDispatcher';
 
 export const lsCommand = new Command('ls')
   .description('List all jobs (excluding soft-deleted)')
-  .action(async () => {
+  .option('--json', 'Output as JSON array')
+  .action(async (options) => {
     const jobs = CommandDispatcher.ls();
+
+    if (options.json) {
+      console.log(JSON.stringify(jobs, null, 2));
+      return;
+    }
 
     if (jobs.length === 0) {
       console.log('No jobs found.');

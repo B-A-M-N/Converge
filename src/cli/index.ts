@@ -18,6 +18,7 @@ import { daemonCommand } from './commands/daemon';
 import { getCommand } from './commands/get';
 import { explainCommand } from './commands/explain';
 import { cancelCommand } from './commands/cancel';
+import { triggerCommand } from './commands/trigger';
 
 const SOCKET_PATH = process.env.CONVERGE_SOCKET_PATH
   ?? path.join(os.homedir(), '.converge', 'converge.sock');
@@ -92,6 +93,7 @@ async function main() {
   program.addCommand(daemonCommand);
   program.addCommand(getCommand);
   program.addCommand(explainCommand);
+  program.addCommand(triggerCommand);
 
   await program.parseAsync(process.argv);
 }

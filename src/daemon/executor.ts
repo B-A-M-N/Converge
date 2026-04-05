@@ -1,9 +1,10 @@
 import { JobRepository } from '../repositories/JobRepository';
 import { RunRepository } from '../repositories/RunRepository';
 import { ControlPlane } from '../core/ControlPlane';
+import { TriggerRouter } from '../core/TriggerRouter';
 import { SubprocessLauncher } from '../execution/SubprocessLauncher';
 import { getAdapter } from '../adapters/registry';
-import { Job, Run, NormalizedRunOutput, StopCondition } from '../types';
+import { Run, NormalizedRunOutput, StopCondition } from '../types';
 import { evaluateStopCondition, detectConvergence } from '../conditions/evaluate';
 import { getNextRunTime } from '../utils/time';
 import { sendNotification } from '../notifications';
@@ -16,13 +17,15 @@ export const launcher = new SubprocessLauncher();
 
 const LEASE_RENEWAL_INTERVAL_MS = 60 * 1000; // 1 minute heartbeat
 
+const RUNNABLE_STATES = new Set(['active', 'repeat_detected', 'convergence_candidate']);
+
 export async function executeJobInternal(jobId: string, existingRun?: Run): Promise<void> {
   const job = JobRepository.get(jobId);
-  if (!job || job.state !== 'active') return;
+  if (!job || !RUNNABLE_STATES.has(job.state)) return;
 
   const adapter = getAdapter(job.cli);
   if (!adapter) {
-    ControlPlane.transitionJob(job.id, 'failed', { actorId: 'system' }, `Adapter not found for CLI ${job.cli}`);
+    await ControlPlane.transitionJob(job.id, 'failed', { actorId: 'system' }, `Adapter not found for CLI ${job.cli}`);
     return;
   }
 
@@ -160,11 +163,16 @@ export async function executeJobInternal(jobId: string, existingRun?: Run): Prom
   }
 
   if (!shouldStop) {
-    const convResult = detectConvergence(normalizedOutput, previousRuns);
-    if (convResult.shouldStop) {
-      shouldStop = true;
-      stopReason = `Convergence detected: ${convResult.reason}`;
-      newState = 'paused';
+    const convResult = detectConvergence(job.state as any, normalizedOutput, previousRuns, {
+      mode: (job.convergence_mode ?? 'normal') as any,
+      kind: (job.execution_kind ?? 'general') as any,
+    });
+    if (convResult.nextState !== null) {
+      newState = convResult.nextState;
+      stopReason = convResult.reason;
+      if (convResult.nextState === 'paused') {
+        shouldStop = true;
+      }
     }
   }
 
@@ -183,14 +191,18 @@ export async function executeJobInternal(jobId: string, existingRun?: Run): Prom
 
   RunRepository.update(run);
 
+  // Apply state transition and notify when state changes
   if (newState !== job.state) {
     sendNotification(job, run, job.state, newState, stopReason);
+    await ControlPlane.transitionJob(job.id, newState, { actorId: 'system' }, stopReason);
   }
 
-  if (shouldStop) {
-    ControlPlane.transitionJob(job.id, newState, { actorId: 'system' }, stopReason);
-  } else {
+  if (!shouldStop) {
+    // Job continues — schedule next run (preserves repeat_detected / convergence_candidate state)
     const nextRun = getNextRunTime(job.interval_spec, new Date(finishedAt), job.timezone || undefined);
     JobRepository.updateNextRun(job.id, nextRun ? nextRun.toISOString() : null, finishedAt, rawResult.sessionId || job.session_id);
   }
+
+  // Fan out to downstream subscribers — fire-and-forget, never blocks upstream
+  TriggerRouter.onRunComplete(job, run, normalizedOutput, newState, stopReason);
 }

@@ -1,4 +1,89 @@
-export type JobState = 'pending' | 'active' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type JobState =
+  | 'pending'
+  | 'active'
+  | 'repeat_detected'       // identical output observed; below candidacy threshold
+  | 'convergence_candidate' // streak meets candidacy; one confirming run away from pause
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+/** How aggressively identical-output runs collapse into a convergence signal. */
+export type ConvergenceMode = 'aggressive' | 'normal' | 'conservative' | 'disabled';
+
+/** Supported trigger source types. */
+export type TriggerType = 'ipc' | 'webhook' | 'file' | 'hook' | 'job_event';
+
+/**
+ * Job lifecycle events a downstream job can subscribe to via a job_event trigger.
+ *   run.completed  - upstream run finished with exit code 0
+ *   run.failed     - upstream run finished with non-zero exit code
+ *   run.any        - any upstream run completion regardless of exit code
+ *   state.paused   - upstream job entered paused state (manual or convergence)
+ *   state.converged- upstream job auto-paused due to convergence detection
+ */
+export type JobEventName =
+  | 'run.completed'
+  | 'run.failed'
+  | 'run.any'
+  | 'state.paused'
+  | 'state.converged';
+
+/** Per-trigger configuration stored in the jobs.triggers column. */
+export interface TriggerSpec {
+  type: TriggerType;
+  /** For 'hook': the Claude Code hook event name, e.g. 'UserPromptSubmit'. */
+  event?: string;
+  /** For 'file': glob pattern to watch. */
+  pattern?: string;
+  /** For 'job_event': the source job ID or name to watch. */
+  source_job?: string;
+  /** For 'job_event': which lifecycle event fires this trigger. Defaults to 'run.completed'. */
+  on?: JobEventName;
+}
+
+/**
+ * Normalized envelope passed from any trigger source into the dispatch gateway.
+ * All trigger paths (IPC, webhook, file, hook, job_event) produce one of these.
+ */
+export interface TriggerEnvelope {
+  job_id: string;
+  /** Human-readable source identifier, e.g. 'claude-hook', 'git-hook', 'ci', 'job:<id>'. */
+  source: string;
+  /** Event name within that source, e.g. 'UserPromptSubmit', 'run.completed'. */
+  event_type: string;
+  triggered_at: string;
+  /** If provided, duplicate triggers with the same key within a run window are dropped. */
+  idempotency_key?: string;
+  /** Groups triggers for debounce/coalescing; defaults to job_id. */
+  debounce_key?: string;
+  /** Arbitrary source context stored as provenance on the resulting run. */
+  context?: Record<string, any>;
+  /**
+   * Ordered list of job IDs in the causal chain that produced this envelope.
+   * Used for cycle detection and hop-count limiting.
+   * [ "job-A", "job-B" ] means: job-A triggered job-B which is now triggering this job.
+   */
+  ancestry?: string[];
+}
+
+/**
+ * How simultaneous or rapid-fire triggers are handled for a job.
+ *   enqueue:         always fire, no deduplication
+ *   coalesce:        if a debounce window is active, drop the new trigger (keep first)
+ *   replace_pending: if a debounce window is active, reset it (keep last — standard debounce)
+ *   drop_if_running: silently drop if the job has an active run
+ */
+export type TriggerMode = 'enqueue' | 'coalesce' | 'replace_pending' | 'drop_if_running';
+
+/**
+ * Hints the scheduler/convergence policy about the job's execution semantics.
+ * - deterministic: same inputs always produce same outputs (e.g. echo, build scripts)
+ * - polling: samples external state that may change (e.g. API checks, queue depth)
+ * - external-stateful: depends on external mutable state; sameness now ≠ sameness later
+ * - general: default; applies normal convergence thresholds
+ */
+export type ExecutionKind = 'deterministic' | 'polling' | 'external-stateful' | 'general';
 
 export interface Job {
   /** @deprecated use id instead - kept for compatibility */
@@ -25,6 +110,17 @@ export interface Job {
   recovery_required?: number;
   spec_hash?: string;
   interval_ms?: number;
+  convergence_mode?: ConvergenceMode | null;
+  execution_kind?: ExecutionKind | null;
+  /**
+   * Trigger sources that may fire this job. Empty array / null = scheduled-only.
+   * Serialized as JSON in the jobs.triggers column.
+   */
+  triggers?: TriggerSpec[] | null;
+  /** How concurrent/rapid triggers are resolved. */
+  trigger_mode?: TriggerMode | null;
+  /** Debounce window in milliseconds (0 = no debounce). */
+  debounce_ms?: number | null;
 }
 
 export interface Run {

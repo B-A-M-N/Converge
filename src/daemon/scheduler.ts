@@ -13,6 +13,11 @@ export async function runSchedulerTick() {
   const jobsToProcess = dueJobs.slice(0, MAX_JOBS_PER_TICK);
 
   for (const job of jobsToProcess) {
+    // claude-session jobs are session-owned: an active Claude Code session claims
+    // and executes them via hooks, then calls run-now to record completion.
+    // The daemon scheduler must not auto-execute them.
+    if (job.cli === 'claude-session') continue;
+
     if (ControlPlane.acquireLease(job.id, LEASE_DURATION_MS)) {
       try {
         await executeJobInternal(job.id);

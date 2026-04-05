@@ -1,4 +1,4 @@
-import { Job, Run, JobState, Actor } from '../types';
+import { Job, Run, JobState, Actor, TriggerEnvelope } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { executeJobInternal } from '../daemon/executor';
 import {
@@ -101,7 +101,7 @@ export class ControlPlane {
 
   // ─── RUN-NOW (Orchestration) ───
 
-  static async runNow(jobId: string, actor: Actor): Promise<any> {
+  static async runNow(jobId: string, actor: Actor, provenance?: TriggerEnvelope): Promise<any> {
     void(actor); // Actor parameter reserved for future audit trail
 
     // In-memory guard to prevent concurrent runs
@@ -143,10 +143,11 @@ export class ControlPlane {
         throw new Error(`Job ${jobId} not found`);
       }
 
+      const runnableStates = new Set(['active', 'repeat_detected', 'convergence_candidate']);
       // If job is pending, activate it
       if (job.state === 'pending') {
         await this.transitionJob(jobId, 'active', this.getSystemActor(), 'Operator: run-now activation');
-      } else if (job.state !== 'active') {
+      } else if (!runnableStates.has(job.state)) {
         this.releaseLease(jobId);
         leaseAcquired = false;
         throw new Error(`Job ${jobId} is not in a runnable state (current: ${job.state})`);
@@ -177,7 +178,7 @@ export class ControlPlane {
         reason: null,
         pid: null,
         output_hash: null,
-        provenance_json: null,
+        provenance_json: provenance ? JSON.stringify(provenance) : null,
         is_ambiguous: 0,
       };
       RunRepository.create(run);
@@ -195,8 +196,8 @@ export class ControlPlane {
         }
       }, LEASE_RENEWAL_INTERVAL_MS);
 
-      // Execute the job
-      await executeJobInternal(jobId);
+      // Execute the job — pass the run we created so executor doesn't create a second one
+      await executeJobInternal(jobId, run);
 
       // Fetch finalized run details
       const finalRun = RunRepository.get(runId);
@@ -226,14 +227,23 @@ export class ControlPlane {
       throw new Error('spec.cli is required and must be a non-empty string');
     }
 
-    // Normalize interval_spec
-    const intervalMs = intervalSpecToMs(spec.interval_spec);
-    const normalizedInterval = String(intervalMs);
+    const triggers: any[] = spec.triggers ?? [];
+    const hasTriggers = triggers.length > 0;
+    const hasInterval = !!spec.interval_spec;
 
-    // Enforce minimum interval floor (Invariant J)
-    const validationResult = validateIntervalFloor(spec.interval_spec);
-    if (!validationResult.ok) {
-      throw new Error(`Interval floor violation: ${validationResult.error}`);
+    if (!hasInterval && !hasTriggers) {
+      throw new Error('Either interval_spec or at least one trigger is required');
+    }
+
+    // Normalize interval_spec (empty string = trigger-only, skip scheduling)
+    const normalizedInterval = hasInterval ? String(intervalSpecToMs(spec.interval_spec)) : '';
+
+    // Enforce minimum interval floor only for scheduled jobs
+    if (hasInterval) {
+      const validationResult = validateIntervalFloor(spec.interval_spec);
+      if (!validationResult.ok) {
+        throw new Error(`Interval floor violation: ${validationResult.error}`);
+      }
     }
 
     // Identity guard: deduplication
@@ -246,7 +256,8 @@ export class ControlPlane {
 
     const jobId = uuidv4();
     const now = new Date().toISOString();
-    const nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+    const intervalMs = hasInterval ? intervalSpecToMs(spec.interval_spec) : 0;
+    const nextRunAt = hasInterval ? new Date(Date.now() + intervalMs).toISOString() : null;
 
     const job: Job = {
       id: jobId,
@@ -263,6 +274,11 @@ export class ControlPlane {
       max_iterations: null,
       max_failures: 0,
       expires_at: null,
+      convergence_mode: spec.convergence_mode ?? 'normal',
+      execution_kind: spec.execution_kind ?? 'general',
+      triggers: triggers.length > 0 ? triggers : null,
+      trigger_mode: spec.trigger_mode ?? 'enqueue',
+      debounce_ms: spec.debounce_ms ?? 0,
       created_at: now,
       updated_at: now,
       last_run_at: null,
@@ -279,7 +295,8 @@ export class ControlPlane {
   static async pauseJob(jobId: string, actor: Actor): Promise<void> {
     const job = JobRepository.get(jobId);
     if (!job) throw new Error(`Job ${jobId} not found`);
-    if (job.state !== 'active') throw new Error(`Job ${jobId} is not active (current: ${job.state})`);
+    const pausableStates = new Set(['active', 'repeat_detected', 'convergence_candidate']);
+    if (!pausableStates.has(job.state)) throw new Error(`Job ${jobId} cannot be paused from state: ${job.state}`);
 
     await this.transitionJob(jobId, 'paused', actor, 'Operator: pause');
   }

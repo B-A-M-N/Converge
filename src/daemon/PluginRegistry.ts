@@ -1,4 +1,4 @@
-import { getAdapter, listAdapters } from '../adapters/registry';
+import { getAdapter, listAdapters } from '../extensions/registry';
 import { PluginMetadata, PluginManifest, PLUGIN_EVENTS } from './plugin-types';
 import { AgentAdapter } from '../types';
 import { readFileSync, readdirSync, existsSync } from 'fs';
