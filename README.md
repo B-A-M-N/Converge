@@ -18,7 +18,21 @@
 
 ---
 
+```bash
+npm install -g .
+```
+
 **New to CLI agents or automation?** Read the [Beginner's Guide](FOR_BEGINNERS.md) first.
+
+---
+
+## Is This For Me?
+
+If you have ever wanted an agent to "keep trying until it works" and then walked away — yes.
+
+You don't need to understand the architecture to use it. The quick start is two commands. The daemon starts itself. The hard parts (lease enforcement, crash recovery, event sourcing) are invisible until something goes wrong, at which point they're exactly what you want.
+
+If a shell script with `sleep 300` would have solved your problem, Converge will solve it better with one command and an audit log. If you need multiple agents coordinating work across sessions, it scales to that too.
 
 ---
 
@@ -436,6 +450,21 @@ converge logs <job-id>   # inspect last run output and exit code
 converge doctor   # lists available adapters
 which claude      # verify the CLI binary is on your PATH
 ```
+
+---
+
+## Contributing
+
+Pull requests are welcome. There is no rigid process — open an issue to discuss what you want to change, or just send the PR.
+
+A few things that would genuinely be useful:
+
+- **New adapters** — if you use a CLI agent that isn't listed, adding an adapter is straightforward (see `src/adapters/`)
+- **Stop condition types** — `convergence` is partially stubbed and would benefit from a real implementation
+- **Windows support** — the daemon uses Unix sockets; named pipes would get it working on Windows
+- **Bug reports** — if something breaks, open an issue with the output of `converge doctor` and `converge logs <job-id>`
+
+The test suite is strict but the bar for contribution isn't. If you are not sure whether something is worth a PR, open an issue first and ask. The worst answer is "not right now."
 
 ---
 
