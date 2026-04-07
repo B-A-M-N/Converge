@@ -1,0 +1,19 @@
+{
+  "name": "converge",
+  "version": "0.1.0",
+  "description": "Recurring task engine for Codex — schedule, poll, retry, and monitor work on intervals",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Converge",
+    "shortDescription": "Recurring task scheduling for Codex sessions",
+    "longDescription": "Converge lets Codex sessions run tasks on a schedule, poll until a condition is met, retry on failure, or monitor something over time. The Codex session owns execution — it claims due jobs, runs them inline, and submits results back to the daemon.",
+    "developerName": "Converge",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Run the test suite every 10 minutes until it passes.",
+      "Check if the PR is merged every 5 minutes for the next hour.",
+      "Watch for drift in the config file every 30 minutes."
+    ]
+  }
+}
