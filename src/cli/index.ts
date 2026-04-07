@@ -19,6 +19,8 @@ import { getCommand } from './commands/get';
 import { explainCommand } from './commands/explain';
 import { cancelCommand } from './commands/cancel';
 import { triggerCommand } from './commands/trigger';
+import { claimRunCommand } from './commands/claim-run';
+import { completeRunCommand } from './commands/complete-run';
 
 const SOCKET_PATH = process.env.CONVERGE_SOCKET_PATH
   ?? path.join(os.homedir(), '.converge', 'converge.sock');
@@ -94,6 +96,8 @@ async function main() {
   program.addCommand(getCommand);
   program.addCommand(explainCommand);
   program.addCommand(triggerCommand);
+  program.addCommand(claimRunCommand);
+  program.addCommand(completeRunCommand);
 
   await program.parseAsync(process.argv);
 }

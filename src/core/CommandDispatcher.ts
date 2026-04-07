@@ -49,6 +49,17 @@ export class CommandDispatcher {
     return ControlPlane.runNow(jobId, actor ?? { actorId: 'cli' } as Actor);
   }
 
+  static async claimRunNow(jobId: string, actor?: Actor): Promise<{ runId: string; job: any }> {
+    return ControlPlane.claimRunNow(jobId, actor ?? { actorId: 'cli' } as Actor);
+  }
+
+  static async completeRun(
+    runId: string,
+    result: { stdout: string; stderr: string; exitCode: number; sessionId?: string; summary?: string }
+  ): Promise<any> {
+    return ControlPlane.completeRun(runId, result);
+  }
+
   static async trigger(
     jobId: string,
     opts: { source?: string; eventType?: string; context?: Record<string, any> } = {}

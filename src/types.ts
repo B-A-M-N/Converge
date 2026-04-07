@@ -178,6 +178,12 @@ export type NormalizedRunOutput = {
 export interface AgentAdapter {
   name: string;
   supportsContinuation?: boolean;
+  /**
+   * When true, the daemon scheduler will not auto-execute jobs for this adapter.
+   * The live agent session is responsible for claiming and executing due jobs,
+   * then submitting results via claimRunNow / completeRun.
+   */
+  isSessionOwned?: boolean;
   detect(): Promise<AdapterHealth>;
   startRun(input: StartRunInput): Promise<any>;
   resumeRun(input: ResumeRunInput): Promise<any>;
