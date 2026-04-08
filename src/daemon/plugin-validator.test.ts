@@ -82,6 +82,7 @@ describe('PluginValidator', () => {
     });
 
     it('returns false for non-existent adapter', () => {
+      (getAdapter as any).mockReturnValueOnce(undefined);
       expect(PluginValidator.validateAdapterExistence('nonexistent')).toBe(false);
     });
   });

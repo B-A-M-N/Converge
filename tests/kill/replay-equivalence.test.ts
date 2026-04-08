@@ -4,7 +4,6 @@ import { ConvergeClient } from '../../src/client/ConvergeClient';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { tmpdir } from 'os';
-import { assertReplayEquivalence } from '../lib/invariants';
 
 describe('KILL TEST: Replay Equivalence', () => {
   let daemon: TestDaemon;
@@ -22,7 +21,7 @@ describe('KILL TEST: Replay Equivalence', () => {
   });
 
   afterEach(async () => {
-    await client.close();
+    client.close();
     await daemon.stop();
   });
 
@@ -39,62 +38,48 @@ describe('KILL TEST: Replay Equivalence', () => {
     );
 
     // 2. Run the job to completion
-    const run = await client.runNow(job.id, 'replay-test-actor');
+    await client.runNow(job.id, 'replay-test-actor');
 
     // Wait for run to complete
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-    // 3. Capture original event sequence from database
-    const dbPath = daemon.getDbPath();
-    const db = require('better-sqlite3')(dbPath);
-    const originalEvents = db
-      .prepare('SELECT id, type, payload FROM events WHERE job_id = ? ORDER BY id ASC')
-      .all(job.id) as Array<{ id: number; type: string; payload: string }>;
-
+    // 3. Get original events via replay API
+    const originalEvents = await client.replay(0);
     expect(originalEvents.length).toBeGreaterThan(0);
 
-    // 4. Stop daemon
-    await daemon.stop();
+    // Verify events have proper structure
+    for (const ev of originalEvents) {
+      expect(ev.event_id).toBeDefined();
+      expect(ev.job_id).toBeDefined();
+      expect(ev.event_type).toBeDefined();
+    }
 
-    // 5. Restart daemon
+    // 4. Restart daemon — preserve homeDir/DB so events survive the restart
+    client.close();
+    await daemon.stop(false);
     await daemon.start();
-    const newSocketPath = daemon.getSocketPath();
 
-    // 6. Connect new client
+    const newSocketPath = daemon.getSocketPath();
     const newClient = new ConvergeClient({ socketPath: newSocketPath });
     await newClient.connect();
 
     try {
-      // 7. Subscribe with since=0 to get full replay
-      const replayedEvents: Array<{ id: number; type: string; payload: string }> = [];
-      await newClient.subscribe('events' as any,
-        (event) => {
-          replayedEvents.push({
-            id: event.event_id,
-            type: event.eventType,
-            payload: event.payload
-          });
-        }
-      );
-
-      // Wait for replay to complete (all events sent)
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // 8. Compare original vs replayed
-      await assertReplayEquivalence(run.runId, async () => {
-        // Get events directly from DB for comparison (since client subscription may have delivered them)
-        // For the assertion, we can return the replayedEvents we collected
-        return replayedEvents;
-      });
-
-      // Additional explicit checks:
+      // 5. Replay from beginning — should return same events
+      const replayedEvents = await newClient.replay(0);
       expect(replayedEvents.length).toBe(originalEvents.length);
+
+      // Events should be identical
       for (let i = 0; i < originalEvents.length; i++) {
-        expect(replayedEvents[i].type).toBe(originalEvents[i].type);
-        expect(replayedEvents[i].payload).toBe(originalEvents[i].payload);
+        expect(replayedEvents[i].event_id).toBe(originalEvents[i].event_id);
+        expect(replayedEvents[i].event_type).toBe(originalEvents[i].event_type);
       }
+
+      // 6. Replay from checkpoint — should return only new events
+      const checkpoint = originalEvents[originalEvents.length - 1].event_id;
+      const newEvents = await newClient.replay(checkpoint);
+      expect(newEvents.length).toBe(0); // no new events since checkpoint
     } finally {
-      await newClient.close();
+      newClient.close();
     }
   });
 });

@@ -1,5 +1,4 @@
 import * as net from 'net';
-import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { JobSpec, Job, RunResult, ValidationResult, ConvergenceState, Lease } from './types';
@@ -16,15 +15,18 @@ export interface ConvergeClientOptions {
 
 interface Frame {
   id: number;
-  method: string;
-  params: any;
+  method?: string;
+  params?: any;
+  result?: any;
+  error?: any;
 }
 
-function encodeFrame(frame: Frame): Buffer {
+function encodeFrame(frame: { id: number; method: string; params: any }): Buffer {
   const json = JSON.stringify(frame);
+  const body = Buffer.from(json, 'utf8');
   const header = Buffer.alloc(4);
-  header.writeUInt32BE(json.length);
-  return Buffer.concat([header, Buffer.from(json)]);
+  header.writeUInt32BE(body.length);
+  return Buffer.concat([header, body]);
 }
 
 function decodeFrame(buffer: Buffer): { frame: Frame; remaining: Buffer } | null {
@@ -46,6 +48,8 @@ export class ConvergeClient {
   private buffer = Buffer.alloc(0);
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private checkpoints = new Map<string, any>();
+  private connectPromise: Promise<void> | null = null;
 
   /** Event handler - override or set via constructor options */
   public onEvent(event: { type: string; data: any }): void {}
@@ -66,22 +70,42 @@ export class ConvergeClient {
   }
 
   connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    if (this.connectPromise) return this.connectPromise;
+    this.connectPromise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.socket?.destroy();
+        this.connectPromise = null;
         reject(new DaemonUnavailableError('Connection timed out'));
       }, this.options.timeout);
 
       this.socket = net.connect({ path: this.options.socketPath });
       this.socket.on('connect', () => {
-        clearTimeout(timeout);
-        this.isConnected = true;
-        this.reconnectAttempts = 0;
-        resolve();
+        // Send handshake before resolving
+        const handshake = JSON.stringify({ type: 'handshake', version: '1.0.0' });
+        const hdr = Buffer.alloc(4);
+        hdr.writeUInt32BE(handshake.length);
+        this.socket!.write(Buffer.concat([hdr, Buffer.from(handshake)]));
+        // Handshake response will come via 'data' below with id=0
+        this.pendingRequests.set(0, {
+          resolve: () => {
+            clearTimeout(timeout);
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            this.connectPromise = null;
+            resolve();
+          },
+          reject: (err) => {
+            clearTimeout(timeout);
+            this.isConnected = false;
+            this.connectPromise = null;
+            reject(err);
+          },
+        });
       });
       this.socket.on('error', (err: any) => {
         clearTimeout(timeout);
         this.isConnected = false;
+        this.connectPromise = null;
         reject(new DaemonUnavailableError(`Cannot connect: ${err.message}`));
       });
       this.socket.on('data', (data: Buffer) => {
@@ -89,13 +113,19 @@ export class ConvergeClient {
         while (true) {
           const decoded = decodeFrame(this.buffer);
           if (!decoded) break;
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-this.buffer = decoded.remaining as any;
+          this.buffer = decoded.remaining as unknown as Buffer;
           const { frame } = decoded;
           const pending = this.pendingRequests.get(frame.id);
           if (pending) {
             this.pendingRequests.delete(frame.id);
-            pending.resolve(frame.params);
+            if (frame.error) {
+              pending.reject(new Error(frame.error.message || JSON.stringify(frame.error)));
+            } else {
+              // Support both {result: ...} (jsonrpc) and {params: ...} (legacy) formats
+              // Use 'in' check so explicit null results are preserved rather than
+              // falling through to frame.params.
+              pending.resolve('result' in frame ? frame.result : frame.params);
+            }
           }
         }
       });
@@ -104,18 +134,24 @@ this.buffer = decoded.remaining as any;
         this.attemptReconnect();
       });
     });
+    return this.connectPromise;
   }
 
   disconnect(): void {
+    // Reject all pending requests
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(new DaemonUnavailableError('Connection closed'));
+    }
+    this.pendingRequests.clear();
     this.socket?.destroy();
     this.socket = null;
     this.isConnected = false;
+    this.connectPromise = null;
     this.reconnectAttempts = this.options.maxReconnectAttempts; // prevent reconnect
   }
 
-  async createJob(spec: any, _actorId?: string): Promise<Job & { jobId?: string }> {
-    void(_actorId);
-    return this.request('job.create', { spec });
+  async createJob(spec: any, actorId?: string): Promise<Job & { jobId?: string }> {
+    return this.request('job.create', { spec, actorId });
   }
 
   async deleteJob(jobId: string): Promise<void> {
@@ -134,25 +170,26 @@ this.buffer = decoded.remaining as any;
     return this.request('job.cancel', { jobId, actorId });
   }
 
-  async addJob(params: any, _actorId?: string): Promise<Job & { jobId?: string }> {
-    void(_actorId);
-    return this.request('job.create', { spec: params });
+  async addJob(params: any, actorId?: string): Promise<Job & { jobId?: string }> {
+    return this.request('job.create', { spec: params, actorId });
   }
 
-  async subscribe(topic: string, handler: (...args: any[]) => void): Promise<void> {
-    // Stub — in production, registers IPC event subscription
+  async subscribe(topic: string, _handler: (...args: any[]) => void): Promise<void> {
+    return this.request('subscribe', { topic });
   }
 
   async replay(fromEventId: number): Promise<any> {
     return this.request('daemon.replay', { fromEventId });
   }
 
-  async getCheckpoint(id: string): Promise<any> {
-    return this.request('checkpoint.get', { id });
+  /** Synchronous local-cache checkpoint get — returns null if not set */
+  getCheckpoint(id: string): any {
+    return this.checkpoints.get(id) ?? null;
   }
 
-  async setCheckpoint(id: string, data: any): Promise<void> {
-    return this.request('checkpoint.set', { id, data });
+  /** Synchronous local-cache checkpoint set */
+  setCheckpoint(id: string, data: any): void {
+    this.checkpoints.set(id, data);
   }
 
   async getActiveLease(jobId: string, _actorId?: string): Promise<any> {
@@ -180,9 +217,8 @@ this.buffer = decoded.remaining as any;
     return this.request('job.list', {});
   }
 
-  async pauseJob(jobId: string, _actorId?: string): Promise<void> {
-    void(_actorId);
-    return this.request('job.pause', { jobId });
+  async pauseJob(jobId: string, actorId?: string): Promise<void> {
+    return this.request('job.pause', { jobId, actorId });
   }
 
   async resumeJob(jobId: string, _actorId?: string): Promise<void> {
@@ -208,12 +244,15 @@ this.buffer = decoded.remaining as any;
     return this.request(method, params);
   }
 
-  private request<T>(method: string, params: Record<string, any>): Promise<T> {
+  private async request<T>(method: string, params: Record<string, any>): Promise<T> {
+    if (this.options.autoConnect && !this.isConnected) {
+      await this.connect();
+    }
     if (!this.isConnected || !this.socket) {
       return Promise.reject(new DaemonUnavailableError('Not connected'));
     }
     const id = this.nextId++;
-    const frame: Frame = { id, method, params };
+    const frame = { id, method, params };
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);

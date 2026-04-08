@@ -1,18 +1,19 @@
 import { AgentAdapter, AdapterHealth, StartRunInput, StartRunResult, ResumeRunInput, ResumeRunResult, CancelRunInput, CancelRunResult, NormalizeOutputInput, NormalizedRunOutput } from '../types';
 
 /**
- * Session-cooperative adapter.
- * Jobs with cli=claude-session are NOT auto-executed by the daemon scheduler.
- * The running Claude Code session detects due jobs via SessionStart/UserPromptSubmit
- * hooks, executes them inline using its own tools, then calls `converge run-now`
- * to record completion and advance the schedule.
+ * Session-cooperative adapter for Codex CLI.
  *
- * When `run-now` is called by the session, startRun here is a no-op — the session
- * already did the work. We just return success so Converge records the run and
- * schedules the next one.
+ * Jobs with cli=codex-session are NOT auto-executed by the daemon scheduler.
+ * The running Codex session detects due jobs (via hooks or skill), claims them
+ * with `converge claim-run`, executes the task using its own tools, then submits
+ * results with `converge complete-run`.
+ *
+ * startRun / resumeRun are intentional no-ops here — the adapter exists so that:
+ *   1. The scheduler knows to skip these jobs (isSessionOwned: true)
+ *   2. normalizeOutput normalizes session-submitted results consistently
  */
-export const claudeSessionAdapter: AgentAdapter = {
-  name: 'claude-session',
+export const codexSessionAdapter: AgentAdapter = {
+  name: 'codex-session',
   supportsContinuation: false,
   isSessionOwned: true,
 
@@ -21,7 +22,7 @@ export const claudeSessionAdapter: AgentAdapter = {
   },
 
   async startRun(_input: StartRunInput): Promise<StartRunResult> {
-    // The session executed the task before calling run-now. Nothing to do here.
+    // Session executes the task before calling complete-run. Nothing to do here.
     return { pid: process.pid, exitCode: 0 };
   },
 
@@ -38,12 +39,12 @@ export const claudeSessionAdapter: AgentAdapter = {
       rawExitCode: input.exitCode ?? 0,
       stdout: input.stdout ?? '',
       stderr: input.stderr ?? '',
-      assistantSummary: 'executed by session',
+      assistantSummary: 'executed by codex session',
       sessionId: null,
       markers: [],
       filesChanged: [],
       retrySuggested: false,
-      successSuggested: true,
+      successSuggested: (input.exitCode ?? 0) === 0,
     };
   },
 };

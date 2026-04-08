@@ -17,18 +17,20 @@ export class ConcurrentTestClient {
     const clients: Array<{ client: ConvergeClient; actorId: string }> = [];
     const results: Array<{ success: boolean; result?: T; error?: string }> = [];
 
-    // Create n clients (auto-connect)
+    // Create n clients
     for (let i = 0; i < n; i++) {
       const actorId = `test-client-${i}`;
-      const client = new ConvergeClient({
-        socketPath,
-        autoConnect: true,
-      });
+      const client = new ConvergeClient({ socketPath });
       clients.push({ client, actorId });
     }
 
     try {
-      // Execute fn in parallel
+      // Pre-connect all clients in parallel before firing requests.
+      // This ensures all requests are sent as a simultaneous batch rather than
+      // staggered across slow sequential handshakes.
+      await Promise.all(clients.map(({ client }) => client.connect()));
+
+      // Execute fn in parallel — all clients are already connected
       const promises = clients.map(async ({ client, actorId }, idx) => {
         try {
           const result = await fn(client, actorId);

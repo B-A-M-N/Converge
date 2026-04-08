@@ -48,9 +48,10 @@ describe('KILL TEST: Lease Contention Storm', () => {
       // Verify exactly one active lease/run exists
       await assertLeaseExclusivity(job.jobId!!);
 
-      // Double-check via DB: count running runs for this job
+      // Double-check via DB: exactly one run should have been created (completed, not running,
+      // since the command exits immediately).
       const db = require('better-sqlite3')(daemon.getDbPath());
-      const result = db.prepare('SELECT COUNT(*) as c FROM runs WHERE job_id = ? AND status = ?').get(job.jobId!, 'running') as { c: number };
+      const result = db.prepare("SELECT COUNT(*) as c FROM runs WHERE job_id = ? AND status IN ('running','completed')").get(job.jobId!) as { c: number };
       expect(result.c).toBe(1);
       db.close();
     } finally {
@@ -76,17 +77,14 @@ describe('KILL TEST: Lease Contention Storm', () => {
         'test-actor'
       );
 
-      // Run 20 parallel attempts to increase chance of losers
+      // Run 20 parallel attempts to increase chance of losers.
+      // Let runInParallel handle errors so that successes/failures are correctly tracked.
       const results = await ConcurrentTestClient.runInParallel(
         socketPath,
         20,
         async (client, actorId) => {
-          try {
-            const run = await client.runNow(job.jobId!!, actorId);
-            return { success: true, runId: run.runId };
-          } catch (error: any) {
-            return { success: false, error: error.message };
-          }
+          const run = await client.runNow(job.jobId!!, actorId);
+          return { runId: run.runId };
         }
       );
 

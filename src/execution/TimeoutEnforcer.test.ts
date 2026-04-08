@@ -24,7 +24,7 @@ describe('TimeoutEnforcer', () => {
   it('Test 1: start() begins a timer that triggers after specified timeout', () => {
     const enforcer = new TimeoutEnforcer(mockProc as any, 2000, 10000, killMock as any);
     enforcer.start();
-    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 2000);
+    // Verify timeout fires at exactly 2000ms\n    vi.advanceTimersByTime(1999);\n    expect(killMock).not.toHaveBeenCalled();\n    vi.advanceTimersByTime(1);\n    expect(killMock).toHaveBeenCalled();
   });
 
   it('Test 2: sends SIGTERM when timeout fires and records it in audit trail', () => {
@@ -105,26 +105,30 @@ describe('TimeoutEnforcer', () => {
   });
 
   it('Test 9: defaultKill uses negative PID on Unix', () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'linux', writable: true });
     const enforcer = new TimeoutEnforcer(mockProc as any, 1000, 5000);
     enforcer.start();
     vi.advanceTimersByTime(1000);
-    expect(process.kill).toHaveBeenCalledWith(-12345, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
     vi.advanceTimersByTime(5000);
-    expect(process.kill).toHaveBeenCalledWith(-12345, 'SIGKILL');
+    expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
     Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true });
+    killSpy.mockRestore();
   });
 
   it('Test 10: defaultKill uses taskkill on Windows', () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', writable: true });
     const enforcer = new TimeoutEnforcer(mockProc as any, 1000, 5000);
     enforcer.start();
     vi.advanceTimersByTime(1000);
-    expect(process.kill).toHaveBeenCalledWith(12345, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(12345, 'SIGTERM');
     vi.advanceTimersByTime(5000);
-    expect(process.kill).toHaveBeenCalledWith(12345, 'SIGKILL');
+    expect(killSpy).toHaveBeenCalledWith(12345, 'SIGKILL');
     Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true });
+    killSpy.mockRestore();
   });
 });

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConvergeClient } from './ConvergeClient';
-import { encodeFrame, decodeFrame } from './framing-utils';
 import { DaemonUnavailableError } from './errors';
 
 describe('ConvergeClient Additional Coverage', () => {
@@ -20,26 +19,16 @@ describe('ConvergeClient Additional Coverage', () => {
     it('rejects connect promise on socket error', async () => {
       client = new ConvergeClient({ socketPath, autoConnect: false });
       const connectPromise = client.connect();
-
-      // Simulate socket error
-      setTimeout(() => {
-        (client as any).socket?.emit('error', new Error('ECONNREFUSED'));
-      }, 10);
-
-      await expect(connectPromise).rejects.toThrow('ECONNREFUSED');
-    });
-
-    it('handles malformed data from server', async () => {
-      // This would require a more complex mock; trust that framing utils handle this
-      // Instead we test that sendFrame validates input
+      // Socket will immediately fail with ENOENT since file doesn't exist
+      await expect(connectPromise).rejects.toThrow(/Cannot connect:/);
     });
   });
 
   describe('Request/Response Correlation', () => {
     it('generates unique request IDs', () => {
       client = new ConvergeClient({ socketPath, autoConnect: false });
-      const id1 = (client as any).nextRequestId();
-      const id2 = (client as any).nextRequestId();
+      const id1 = (client as any).nextId++;
+      const id2 = (client as any).nextId++;
       expect(id1).not.toBe(id2);
     });
 
@@ -63,9 +52,7 @@ describe('ConvergeClient Additional Coverage', () => {
   describe('Auto-connect behavior', () => {
     it('calls connect on first method when autoConnect is true', async () => {
       client = new ConvergeClient({ socketPath, autoConnect: true });
-      const connectSpy = vi.spyOn(client as any, 'connect');
-      // The first call should trigger connect
-      // Since we're not starting a real daemon, it will fail, but we can check connect was called
+      const connectSpy = vi.spyOn(client as any, 'connect').mockRejectedValue(new Error('connection failed'));
       await expect(client.listJobs()).rejects.toThrow();
       expect(connectSpy).toHaveBeenCalled();
     });
@@ -73,7 +60,7 @@ describe('ConvergeClient Additional Coverage', () => {
     it('does not auto-connect when disabled', async () => {
       client = new ConvergeClient({ socketPath, autoConnect: false });
       const connectSpy = vi.spyOn(client as any, 'connect');
-      await expect(client.listJobs()).rejects.toThrow('No socket connection');
+      await expect(client.listJobs()).rejects.toThrow('Not connected');
       expect(connectSpy).not.toHaveBeenCalled();
     });
   });
@@ -82,33 +69,32 @@ describe('ConvergeClient Additional Coverage', () => {
     it('onEvent method registers callback', () => {
       client = new ConvergeClient({ socketPath, autoConnect: false });
       const callback = vi.fn();
-      (client as any).onEvent(callback);
-      const broadcaster = (client as any).eventBroadcaster;
-      // Check callback was registered
+      (client as any).onEvent = callback;
+      // Confirm callback is set
+      expect((client as any).onEvent).toBe(callback);
     });
 
     it('event broadcaster delivers events to callback', () => {
       client = new ConvergeClient({ socketPath, autoConnect: false });
       const callback = vi.fn();
-      (client as any).onEvent(callback);
-      const broadcaster = (client as any).eventBroadcaster as any;
-      // Manually emit event
-      broadcaster.dispatch({ eventType: 'TEST', payload: { foo: 'bar' } });
+      (client as any).onEvent = callback;
+      // Manually emit event via _onEvent
+      (client as any)._onEvent({ eventType: 'TEST', payload: { foo: 'bar' } });
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({ eventType: 'TEST', payload: { foo: 'bar' } })
       );
     });
 
-    it('multiple callbacks are independent', () => {
-      client = new ConvergeClient({ socketPath, autoConnect: false });
+    it('multiple callbacks can be set independently', () => {
+      const client1 = new ConvergeClient({ socketPath, autoConnect: false });
+      const client2 = new ConvergeClient({ socketPath, autoConnect: false });
       const cb1 = vi.fn();
       const cb2 = vi.fn();
-      (client as any).onEvent(cb1);
-      (client as any).onEvent(cb2);
-      const broadcaster = (client as any).eventBroadcaster as any;
-      broadcaster.dispatch({ eventType: 'EVENT' });
+      (client1 as any).onEvent = cb1;
+      (client2 as any).onEvent = cb2;
+      (client1 as any)._onEvent({ eventType: 'EVENT' });
       expect(cb1).toHaveBeenCalled();
-      expect(cb2).toHaveBeenCalled();
+      expect(cb2).not.toHaveBeenCalled();
     });
   });
 

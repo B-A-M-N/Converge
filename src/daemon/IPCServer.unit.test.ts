@@ -1,8 +1,51 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { IPCServer } from './IPCServer';
+import * as path from 'path';
+
+// ESM-safe: mock fs at module level
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal() as any;
+  return {
+    ...actual,
+    existsSync: vi.fn().mockReturnValue(false),
+    mkdirSync: vi.fn(),
+    unlinkSync: vi.fn(),
+    chmodSync: vi.fn(),
+  };
+});
+
+// ESM-safe: mock net at module level so createServer is interceptable
+vi.mock('net', () => {
+  const mockServer = {
+    listening: false,
+    _handlers: {} as Record<string, (...args: any[]) => void>,
+    on: vi.fn(function (this: any, event: string, handler: (...args: any[]) => void) {
+      this._handlers[event] = handler;
+      return this;
+    }),
+    listen: vi.fn(function (this: any, _p: string, cb: () => void) {
+      this.listening = true;
+      cb();
+      return this;
+    }),
+    close: vi.fn(function (this: any, cb: () => void) {
+      this.listening = false;
+      if (cb) cb();
+    }),
+    destroy: vi.fn(),
+  };
+  return {
+    createServer: vi.fn(() => mockServer),
+    _mockServer: mockServer,
+  };
+});
+
 import * as fs from 'fs';
 import * as net from 'net';
-import * as path from 'path';
+import { IPCServer } from './IPCServer';
+
+function getMockServer(): any {
+  return (net as any)._mockServer;
+}
 
 describe('IPCServer Unit', () => {
   let server: IPCServer;
@@ -10,16 +53,22 @@ describe('IPCServer Unit', () => {
 
   beforeEach(() => {
     socketPath = `/tmp/test-converge-${Date.now()}.sock`;
-    vi.stubGlobal('process', { getuid: () => 1000 });
-    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
-    vi.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined);
-    vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
-    vi.spyOn(fs, 'chmodSync').mockImplementation(() => {});
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+    vi.mocked(fs.chmodSync).mockImplementation(() => {});
+    // Reset mock server state
+    const ms = getMockServer();
+    ms.listening = false;
+    ms._handlers = {};
+    vi.mocked(net.createServer).mockReturnValue(ms);
+    vi.mocked(ms.on).mockClear();
+    vi.mocked(ms.listen).mockClear();
+    vi.mocked(ms.close).mockClear();
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('constructor', () => {
@@ -51,30 +100,23 @@ describe('IPCServer Unit', () => {
   });
 
   describe('start()', () => {
-    beforeEach(() => {
-      server = new IPCServer({ socketPath: socketPath });
-      vi.spyOn(net.Server.prototype as any, 'listen').mockImplementation((async function (this: any, _path: string, cb: () => void): Promise<any> {
-        (this as any).listening = true;
-        cb();
-      }) as any);
-      vi.spyOn(net.Server.prototype as any, 'on');
-    });
-
     it('creates directory if it does not exist', async () => {
-      (fs.existsSync as any).mockReturnValue(false);
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      server = new IPCServer({ socketPath });
       await server.start();
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.dirname(socketPath), { recursive: true });
     });
 
     it('removes existing socket file before listening', async () => {
-      (fs.existsSync as any).mockReturnValueOnce(true);
-      (fs.existsSync as any).mockReturnValueOnce(true);
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      server = new IPCServer({ socketPath });
       await server.start();
       expect(fs.unlinkSync).toHaveBeenCalledWith(socketPath);
     });
 
     it('sets chmod 0600 on socket', async () => {
-      (fs.existsSync as any).mockReturnValue(false);
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      server = new IPCServer({ socketPath });
       await server.start();
       expect(fs.chmodSync).toHaveBeenCalledWith(socketPath, 0o600);
     });
@@ -87,10 +129,10 @@ describe('IPCServer Unit', () => {
     });
 
     it('stores router on connection', async () => {
-      (fs.existsSync as any).mockReturnValue(false);
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      server = new IPCServer({ socketPath });
       const s: any = server;
       await server.start();
-      const mockSocket = {} as net.Socket;
       s.routers = [];
       // Simulate connection by directly pushing router
       s.routers.push({});
@@ -99,26 +141,18 @@ describe('IPCServer Unit', () => {
   });
 
   describe('stop()', () => {
-    let s: any;
-
-    beforeEach(async () => {
-      vi.spyOn(net.Server.prototype as any, 'listen').mockImplementation((async function (this: any, _path: string, cb: () => void): Promise<any> {
-        (this as any).listening = true;
-        cb();
-      }) as any);
-      vi.spyOn(net.Server.prototype as any, 'close').mockImplementation(function (this: any, cb: () => void) {
-        (this as any).listening = false;
-        cb();
-      } as any);
-    });
+    async function startServer(): Promise<IPCServer> {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      const srv = new IPCServer({ socketPath });
+      await srv.start();
+      return srv;
+    }
 
     it('shuts down all routers', async () => {
-      server = new IPCServer({ socketPath });
-      s = server as any;
-      (fs.existsSync as any).mockReturnValue(false);
-      await server.start();
-      const mockRouter1 = { shutdown: vi.fn().mockResolvedValue(undefined) };
-      const mockRouter2 = { shutdown: vi.fn().mockResolvedValue(undefined) };
+      server = await startServer();
+      const s = server as any;
+      const mockRouter1 = { shutdown: vi.fn() };
+      const mockRouter2 = { shutdown: vi.fn() };
       s.routers = [mockRouter1, mockRouter2];
       await server.stop();
       expect(mockRouter1.shutdown).toHaveBeenCalled();
@@ -126,41 +160,32 @@ describe('IPCServer Unit', () => {
     });
 
     it('catches router shutdown errors and continues', async () => {
-      server = new IPCServer({ socketPath });
-      s = server as any;
-      (fs.existsSync as any).mockReturnValue(false);
-      await server.start();
-      const mockRouter = { shutdown: vi.fn().mockRejectedValue(new Error('fail')) };
+      server = await startServer();
+      const s = server as any;
+      const mockRouter = { shutdown: vi.fn(() => { throw new Error('fail'); }) };
       s.routers = [mockRouter];
-      await server.stop();
+      await expect(server.stop()).resolves.not.toThrow();
       expect(mockRouter.shutdown).toHaveBeenCalled();
     });
 
     it('closes server if present', async () => {
-      server = new IPCServer({ socketPath });
-      s = server as any;
-      (fs.existsSync as any).mockReturnValue(false);
-      await server.start();
+      server = await startServer();
+      const s = server as any;
       expect(s.server).not.toBeNull();
       await server.stop();
       expect(s.server).toBeNull();
     });
 
     it('removes socket file', async () => {
-      server = new IPCServer({ socketPath });
-      s = server as any;
-      (fs.existsSync as any).mockReturnValue(false);
-      await server.start();
+      server = await startServer();
+      vi.mocked(fs.unlinkSync).mockClear();
       await server.stop();
       expect(fs.unlinkSync).toHaveBeenCalledWith(socketPath);
     });
 
     it('handles socket removal errors gracefully', async () => {
-      server = new IPCServer({ socketPath });
-      s = server as any;
-      (fs.existsSync as any).mockReturnValue(false);
-      vi.spyOn(fs, 'unlinkSync').mockImplementation(() => { throw new Error('EACCES'); });
-      await server.start();
+      server = await startServer();
+      vi.mocked(fs.unlinkSync).mockImplementation(() => { throw new Error('EACCES'); });
       await expect(server.stop()).resolves.not.toThrow();
     });
   });

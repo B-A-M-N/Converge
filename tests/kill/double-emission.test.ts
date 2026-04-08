@@ -45,7 +45,7 @@ describe('Double Emission', () => {
     // Check database: exactly one JOB_CREATED event for this job
     const db = new Database(daemon.getDbPath());
     const count = db
-      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
       .get(job.id, 'JOB_CREATED') as { c: number };
     db.close();
 
@@ -75,10 +75,10 @@ describe('Double Emission', () => {
 
     // Each job should have exactly one JOB_CREATED event
     const count1 = db
-      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
       .get(job1.id, 'JOB_CREATED') as { c: number };
     const count2 = db
-      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
       .get(job2.id, 'JOB_CREATED') as { c: number };
 
     db.close();
@@ -120,7 +120,7 @@ describe('Double Emission', () => {
     const checks = await Promise.all(
       jobs.map(async (job) => {
         const count = db
-          .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+          .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
           .get(job.id, 'JOB_CREATED') as { c: number };
         return count.c === 1;
       })
@@ -143,7 +143,7 @@ describe('Double Emission', () => {
 
     const db = new Database(daemon.getDbPath());
     const count = db
-      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
       .get(job.id, 'RUN_STARTED') as { c: number };
     db.close();
 
@@ -163,15 +163,15 @@ describe('Double Emission', () => {
       'state-test'
     );
 
-    // Pause job
-    await client.pauseJob(job.id, 'operator');
+    // Pause job (use same actor as create to pass ownership check)
+    await client.pauseJob(job.id, 'state-test');
 
     await new Promise(resolve => setTimeout(resolve, 300));
 
     // Count STATE_CHANGED events
     const db = new Database(daemon.getDbPath());
     const count = db
-      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND type = ?')
+      .prepare('SELECT COUNT(*) as c FROM events WHERE job_id = ? AND event_type = ?')
       .get(job.id, 'STATE_CHANGED') as { c: number };
     db.close();
 

@@ -1,6 +1,7 @@
 import { ControlPlane } from '../core/ControlPlane';
 import { executeJobInternal } from './executor';
 import { LEASE_DURATION_MS } from '../config';
+import { getAdapter } from '../adapters/registry';
 
 export let MAX_JOBS_PER_TICK = 100; // Test hook: can override in tests
 
@@ -13,10 +14,11 @@ export async function runSchedulerTick() {
   const jobsToProcess = dueJobs.slice(0, MAX_JOBS_PER_TICK);
 
   for (const job of jobsToProcess) {
-    // claude-session jobs are session-owned: an active Claude Code session claims
-    // and executes them via hooks, then calls run-now to record completion.
-    // The daemon scheduler must not auto-execute them.
-    if (job.cli === 'claude-session') continue;
+    // Session-owned adapters (isSessionOwned: true) are executed by the live
+    // agent session, not the daemon. The session claims jobs, executes them,
+    // then submits results via claimRunNow / completeRun.
+    const adapter = getAdapter(job.cli);
+    if (adapter?.isSessionOwned) continue;
 
     if (ControlPlane.acquireLease(job.id, LEASE_DURATION_MS)) {
       try {

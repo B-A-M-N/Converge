@@ -76,7 +76,7 @@ export class IPCServer {
     for (const router of this.routers) {
       try {
         if (typeof router.shutdown === 'function') {
-          // async, but don't await — fire and forget
+          router.shutdown();
         }
       } catch {
         // Continue shutting down other routers

@@ -17,7 +17,7 @@ describe('OutputNormalizer', () => {
         stderr: '',
       });
       expect(result.success).toBe(false);
-      expect(Object.keys((result.error! as any).rawExitCode ?? {})).toHaveLength(1);
+      expect(Object.keys((result.error! as any).format().rawExitCode ?? {})).toHaveLength(1);
     });
 
     it('applies default sentinels for optional fields when omitted', () => {

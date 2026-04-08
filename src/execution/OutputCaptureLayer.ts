@@ -35,14 +35,9 @@ export class OutputCaptureLayer {
         }
       });
 
-      // Only pipe if not truncated
-      const pipeStdout = () => {
-        if (!this.truncated) {
-          proc.stdout!.pipe(this.stdoutStream!);
-        }
-      };
-      // Delay pipe until next tick to intercept potential highWaterMark issues
-      setImmediate(pipeStdout);
+      if (!this.truncated) {
+        proc.stdout.pipe(this.stdoutStream!);
+      }
     }
 
     // Pipe stderr similarly
@@ -54,12 +49,9 @@ export class OutputCaptureLayer {
         }
       });
 
-      const pipeStderr = () => {
-        if (!this.truncated) {
-          proc.stderr!.pipe(this.stderrStream!);
-        }
-      };
-      setImmediate(pipeStderr);
+      if (!this.truncated) {
+        proc.stderr.pipe(this.stderrStream!);
+      }
     }
 
     // Handle stream finish/close

@@ -100,26 +100,26 @@ export async function assertNoEventGaps(
  * Implements: Replay Determinism invariant.
  */
 export async function assertReplayEquivalence(
-  runId: string,
-  getReplayEvents: (runId: string) => Promise<Array<{ id: number; type: string; payload: string }>>
+  jobId: string,
+  getReplayEvents: (jobId: string) => Promise<Array<{ id: number; event_type: string; metadata: string }>>
 ): Promise<void> {
   const originalEvents = db
-    .prepare('SELECT id, type, payload FROM events WHERE run_id = ? ORDER BY id ASC')
-    .all(runId) as Array<{ id: number; type: string; payload: string }>;
+    .prepare('SELECT id, event_type, metadata FROM events WHERE job_id = ? ORDER BY id ASC')
+    .all(jobId) as Array<{ id: number; event_type: string; metadata: string }>;
 
-  const replayedEvents = await getReplayEvents(runId);
+  const replayedEvents = await getReplayEvents(jobId);
 
   await assertInvariant(
     'ReplayEquivalence',
     () => {
       if (originalEvents.length !== replayedEvents.length) return false;
       for (let i = 0; i < originalEvents.length; i++) {
-        if (originalEvents[i].type !== replayedEvents[i].type) return false;
-        if (originalEvents[i].payload !== replayedEvents[i].payload) return false;
+        if (originalEvents[i].event_type !== replayedEvents[i].event_type) return false;
+        if (originalEvents[i].metadata !== replayedEvents[i].metadata) return false;
       }
       return true;
     },
-    { runId, originalCount: originalEvents.length, replayedCount: replayedEvents.length }
+    { jobId, originalCount: originalEvents.length, replayedCount: replayedEvents.length }
   );
 }
 
@@ -130,18 +130,17 @@ export async function assertReplayEquivalence(
 export async function assertActorAttribution(jobId: string): Promise<void> {
   const stateChanges = db
     .prepare(`
-      SELECT e.id, e.payload
+      SELECT e.id, e.actor_id
       FROM events e
-      WHERE e.job_id = ? AND e.type = 'STATE_CHANGED'
+      WHERE e.job_id = ? AND e.event_type = 'STATE_CHANGED'
     `)
-    .all(jobId) as Array<{ id: number; payload: string }>;
+    .all(jobId) as Array<{ id: number; actor_id: string }>;
 
   for (const ev of stateChanges) {
-    const payload = JSON.parse(ev.payload);
     await assertInvariant(
       'ActorAttribution',
-      () => payload.actorId !== undefined && payload.actorType !== undefined,
-      { eventId: ev.id, jobId, payload }
+      () => ev.actor_id !== null && ev.actor_id !== undefined && ev.actor_id !== '',
+      { eventId: ev.id, jobId, actorId: ev.actor_id }
     );
   }
 }
@@ -157,20 +156,20 @@ export async function assertEventStateConsistency(jobId: string): Promise<void> 
     .all(jobId) as Array<{ id: string; status: string }>;
 
   for (const run of runs) {
-    const runEvents = db
-      .prepare('SELECT type FROM events WHERE run_id = ?')
-      .all(run.id) as Array<{ type: string }>;
+    const jobEvents = db
+      .prepare('SELECT event_type FROM events WHERE job_id = ?')
+      .all(jobId) as Array<{ event_type: string }>;
 
     await assertInvariant(
       'EventStateConsistency',
       () => {
         // RUN_STARTED should exist for finished runs
         if (run.status !== 'running') {
-          return runEvents.some(ev => ev.type === 'RUN_STARTED');
+          return jobEvents.some(ev => ev.event_type === 'RUN_STARTED');
         }
         return true;
       },
-      { runId: run.id, runStatus: run.status, eventCount: runEvents.length }
+      { runId: run.id, runStatus: run.status, eventCount: jobEvents.length }
     );
   }
 }

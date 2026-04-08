@@ -1,4 +1,4 @@
-import { Job, Run, JobState, Actor, TriggerEnvelope } from '../types';
+import { Job, Run, JobState, Actor, TriggerEnvelope, NormalizedRunOutput, StopCondition } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { executeJobInternal } from '../daemon/executor';
 import {
@@ -12,6 +12,10 @@ import { RunRepository } from '../repositories/RunRepository';
 import { EventRepository } from '../repositories/EventRepository';
 import { validateIntervalFloor, intervalSpecToMs, MINIMUM_INTERVAL_FLOOR_MS } from '../conditions/interval-validator';
 import { getAdapter } from '../extensions';
+import { evaluateStopCondition, detectConvergence } from '../conditions/evaluate';
+import { getNextRunTime } from '../utils/time';
+import { TriggerRouter } from './TriggerRouter';
+import { sendNotification } from '../notifications';
 
 interface ActorInfo {
   actorId: string;
@@ -217,6 +221,254 @@ export class ControlPlane {
       }
       this.activeRunFlag.delete(jobId);
     }
+  }
+
+  // ─── SESSION-OWNED EXECUTION (claimRunNow / completeRun) ───
+
+  /**
+   * Session-owned claim path.
+   *
+   * The session calls claimRunNow to:
+   *   1. Acquire the lease (persisted in SQLite — survives process boundaries)
+   *   2. Create the Run record (status: 'running')
+   *   3. Return { runId, job } so the session can execute the task itself
+   *
+   * The session must call completeRun when done, passing actual output.
+   * The lease is 30 minutes by default (SESSION_CLAIM_LEASE_MS) to cover
+   * long-running tasks without requiring an in-process heartbeat.
+   */
+  static readonly SESSION_CLAIM_LEASE_MS = 30 * 60 * 1000; // 30 min
+
+  static async claimRunNow(
+    jobId: string,
+    actor: Actor,
+    provenance?: TriggerEnvelope
+  ): Promise<{ runId: string; job: Job }> {
+    void(actor); // Reserved for future audit trail
+    if (ControlPlane.activeRunFlag.has(jobId)) {
+      throw new Error(`Job ${jobId} has an active run — wait for it to finish`);
+    }
+    ControlPlane.activeRunFlag.add(jobId);
+
+    let leaseAcquired = false;
+
+    try {
+      const existingRunPreLease = RunRepository.getActiveRun(jobId);
+      if (existingRunPreLease) {
+        throw new Error(`Job ${jobId} has an active run — wait for it to finish`);
+      }
+
+      leaseAcquired = this.acquireLease(jobId, ControlPlane.SESSION_CLAIM_LEASE_MS);
+      if (!leaseAcquired) {
+        throw new Error(`Job ${jobId} could not acquire lease — another process may hold it`);
+      }
+
+      const existingRunPostAcquire = RunRepository.getActiveRun(jobId);
+      if (existingRunPostAcquire) {
+        this.releaseLease(jobId);
+        leaseAcquired = false;
+        throw new Error(`Job ${jobId} has an active run — lease collision detected`);
+      }
+
+      const job = JobRepository.get(jobId);
+      if (!job) {
+        this.releaseLease(jobId);
+        leaseAcquired = false;
+        throw new Error(`Job ${jobId} not found`);
+      }
+
+      const runnableStates = new Set(['active', 'repeat_detected', 'convergence_candidate']);
+      if (job.state === 'pending') {
+        await this.transitionJob(jobId, 'active', this.getSystemActor(), 'Session claim: activation');
+      } else if (!runnableStates.has(job.state)) {
+        this.releaseLease(jobId);
+        leaseAcquired = false;
+        throw new Error(`Job ${jobId} is not in a runnable state (current: ${job.state})`);
+      }
+
+      const adapter = getAdapter(job.cli);
+      if (!adapter) {
+        this.releaseLease(jobId);
+        leaseAcquired = false;
+        throw new Error(`No adapter found for CLI: ${job.cli}`);
+      }
+      if (!adapter.isSessionOwned) {
+        this.releaseLease(jobId);
+        leaseAcquired = false;
+        throw new Error(`Adapter '${job.cli}' is not session-owned — use runNow instead`);
+      }
+
+      const runId = uuidv4();
+      const run: Run = {
+        id: runId,
+        job_id: jobId,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        status: 'running',
+        exit_code: null,
+        output: null,
+        stdout_path: null,
+        stderr_path: null,
+        summary_json: null,
+        should_continue: null,
+        reason: null,
+        pid: null,
+        output_hash: null,
+        provenance_json: provenance ? JSON.stringify(provenance) : null,
+        is_ambiguous: 0,
+      };
+      RunRepository.create(run);
+
+      // activeRunFlag is intentionally kept set until completeRun clears it
+      return { runId, job };
+    } catch (e) {
+      // Only clear the flag on failure — success leaves it set until completeRun
+      if (!leaseAcquired) {
+        ControlPlane.activeRunFlag.delete(jobId);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Session-owned completion path.
+   *
+   * The session calls completeRun after executing the task, providing the
+   * actual stdout/stderr/exitCode. This method:
+   *   - Normalizes output through the adapter
+   *   - Evaluates stop conditions and convergence
+   *   - Persists the finalized Run record
+   *   - Advances next_run_at
+   *   - Releases the lease
+   */
+  static async completeRun(
+    runId: string,
+    result: {
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      sessionId?: string;
+      summary?: string;
+    }
+  ): Promise<{ jobId: string; exitCode: number; shouldContinue: boolean; reason: string }> {
+    const run = RunRepository.get(runId);
+    if (!run) throw new Error(`Run ${runId} not found`);
+    if (run.status !== 'running') throw new Error(`Run ${runId} is not in running state (current: ${run.status})`);
+
+    const job = JobRepository.get(run.job_id);
+    if (!job) throw new Error(`Job ${run.job_id} not found for run ${runId}`);
+
+    const adapter = getAdapter(job.cli);
+    if (!adapter) throw new Error(`No adapter found for CLI: ${job.cli}`);
+
+    const finishedAt = new Date().toISOString();
+
+    let normalizedOutput: NormalizedRunOutput;
+    try {
+      normalizedOutput = adapter.normalizeOutput
+        ? await adapter.normalizeOutput({ stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode })
+        : {
+            rawExitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            assistantSummary: result.summary ?? 'executed by session',
+            sessionId: result.sessionId ?? null,
+            markers: [],
+            filesChanged: [],
+            retrySuggested: false,
+            successSuggested: result.exitCode === 0,
+          };
+    } catch (e: any) {
+      normalizedOutput = {
+        rawExitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr + `\n[Normalization Error]: ${e.message}`,
+        assistantSummary: 'unknown',
+        sessionId: null,
+        markers: [],
+        filesChanged: [],
+        retrySuggested: false,
+        successSuggested: false,
+      };
+    }
+
+    const previousRunsRecords = RunRepository.getByJob(job.id).filter(r => r.id !== runId);
+    const previousRuns: NormalizedRunOutput[] = previousRunsRecords.map(r =>
+      r.summary_json ? JSON.parse(r.summary_json) : { rawExitCode: r.exit_code, stdout: '', stderr: '' }
+    );
+
+    let shouldStop = false;
+    let stopReason = 'Job completed normally';
+    let newState: any = 'active';
+
+    if (job.stop_condition_json) {
+      try {
+        const condition: StopCondition = JSON.parse(job.stop_condition_json);
+        const evalResult = evaluateStopCondition(condition, normalizedOutput, previousRuns);
+        if (evalResult.shouldStop) {
+          shouldStop = true;
+          stopReason = evalResult.reason;
+          newState = 'completed';
+        }
+      } catch {
+        shouldStop = true;
+        stopReason = 'Invalid stop condition JSON';
+        newState = 'failed';
+      }
+    }
+
+    if (!shouldStop) {
+      const convResult = detectConvergence(job.state as any, normalizedOutput, previousRuns, {
+        mode: (job.convergence_mode ?? 'normal') as any,
+        kind: (job.execution_kind ?? 'general') as any,
+      });
+      if (convResult.nextState !== null) {
+        newState = convResult.nextState;
+        stopReason = convResult.reason;
+        if (convResult.nextState === 'paused') shouldStop = true;
+      }
+    }
+
+    if (!shouldStop && job.max_iterations && previousRuns.length + 1 >= job.max_iterations) {
+      shouldStop = true;
+      stopReason = `Reached max iterations (${job.max_iterations})`;
+      newState = 'completed';
+    }
+
+    run.finished_at = finishedAt;
+    run.status = result.exitCode === 0 ? 'success' : 'failed';
+    run.exit_code = result.exitCode;
+    run.summary_json = JSON.stringify(normalizedOutput);
+    run.should_continue = !shouldStop;
+    run.reason = stopReason;
+    RunRepository.update(run);
+
+    if (newState !== job.state) {
+      sendNotification(job, run, job.state, newState, stopReason);
+      await this.transitionJob(job.id, newState, this.getSystemActor(), stopReason);
+    }
+
+    if (!shouldStop) {
+      const nextRun = getNextRunTime(job.interval_spec, new Date(finishedAt), job.timezone || undefined);
+      JobRepository.updateNextRun(
+        job.id,
+        nextRun ? nextRun.toISOString() : null,
+        finishedAt,
+        result.sessionId ?? job.session_id
+      );
+    }
+
+    TriggerRouter.onRunComplete(job, run, normalizedOutput, newState, stopReason);
+
+    this.releaseLease(job.id);
+    ControlPlane.activeRunFlag.delete(job.id);
+
+    return {
+      jobId: job.id,
+      exitCode: result.exitCode,
+      shouldContinue: !shouldStop,
+      reason: stopReason,
+    };
   }
 
   // ─── JOB CREATION ───

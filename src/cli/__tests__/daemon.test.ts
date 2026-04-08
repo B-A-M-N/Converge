@@ -9,8 +9,8 @@ vi.mock('../../daemon/DaemonSupervisor', () => ({
 describe('daemonCommand', () => {
   it('should be defined with correct properties', () => {
     expect(daemonCommand).toBeDefined();
-    expect(daemonCommand.name).toBe('daemon');
-    expect(daemonCommand.description).toBe('Start the background daemon process');
+    expect(daemonCommand.name()).toBe('daemon');
+    expect(daemonCommand.description()).toBe('Start the background daemon process');
   });
 
   it('should have an action handler', () => {

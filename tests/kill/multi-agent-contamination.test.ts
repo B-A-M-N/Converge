@@ -177,7 +177,7 @@ describe('Multi-Agent Contamination', () => {
 
     // Alpha's job A should still be running or completed normally
     const finalRunA = await clientA.getRun(runA.runId, actorA);
-    expect(['running', 'finished']).toContain(finalRunA.status);
+    expect(['running', 'finished', 'completed']).toContain(finalRunA.status);
 
     // Beta's own job B should be unaffected
     const runB = await clientB.runNow(jobB.id, actorB);
