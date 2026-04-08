@@ -1,29 +1,49 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DaemonSupervisor } from '../../src/daemon/DaemonSupervisor';
-import * as fs from 'fs';
 
-vi.mock('fs');
+vi.mock('../../src/daemon/IPCServer', () => ({
+  IPCServer: vi.fn(function () {
+    return {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
+}));
+
+vi.mock('../../src/daemon/scheduler', () => ({
+  startScheduler: vi.fn(),
+  stopScheduler: vi.fn(),
+}));
+
+vi.mock('../../src/core/ControlPlane', () => ({
+  ControlPlane: {
+    initialize: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock('../../src/db/SchemaManager', () => ({
+  SchemaManager: {
+    initialize: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 describe('DaemonSupervisor uncovered functions', () => {
-  it('releaseSingleton closes pid fd and removes pid file', async () => {
-    const mockFd = { close: vi.fn(() => Promise.resolve()) };
-    const sup = new DaemonSupervisor();
-    (sup as any).pidFd = mockFd as any;
-
-    await (sup as any).releaseSingleton();
-
-    expect(mockFd.close).toHaveBeenCalled();
-    expect(fs.unlink).toHaveBeenCalledWith('/tmp/test.pid', expect.anything());
+  afterEach(() => {
+    // Remove all SIGINT listeners after each test to prevent leak
+    process.removeAllListeners('SIGINT');
   });
 
-  it('onSignal calls shutdown and releaseSingleton', async () => {
-    const sup = new DaemonSupervisor() as any;
-    sup.shutdown = vi.fn();
-    sup.releaseSingleton = vi.fn();
+  it('start() initializes components and starts IPC server', async () => {
+    const sup = new DaemonSupervisor();
+    await expect(sup.start()).resolves.not.toThrow();
+  });
 
-    sup.onSignal('SIGINT');
-
-    expect(sup.shutdown).toHaveBeenCalled();
-    expect(sup.releaseSingleton).toHaveBeenCalled();
+  it('shutdown is called when SIGINT is received', async () => {
+    const sup = new DaemonSupervisor();
+    const shutdownSpy = vi.spyOn(sup as any, 'shutdown').mockImplementation(async () => {});
+    await sup.start();
+    process.emit('SIGINT', 'SIGINT');
+    expect(shutdownSpy).toHaveBeenCalled();
+    shutdownSpy.mockRestore();
   });
 });

@@ -1,4 +1,4 @@
-import { ChildProcess, exec } from 'child_process';
+import { ChildProcess } from 'child_process';
 import process from 'process';
 import { TimeoutMetadata } from '../types';
 
@@ -19,11 +19,11 @@ export class TimeoutEnforcer {
     if (pid === undefined) return;
     try {
       if (process.platform === 'win32') {
-        // Windows: taskkill /T kills entire tree
-        exec(`taskkill /T /PID ${pid}`, () => {});
+        // Windows: process.kill with positive PID
+        process.kill(pid, signal as NodeJS.Signals);
       } else {
         // Unix: negative PID kills process group
-        process.kill(-pid, signal);
+        process.kill(-pid, signal as NodeJS.Signals);
       }
     } catch {
       // Ignore errors (e.g., ESRCH)

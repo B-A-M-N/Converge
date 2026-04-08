@@ -74,7 +74,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['integration-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     const manifestPath = join(TEST_DIR, 'integration-test.plugin.json');
     const modulePath = join(TEST_DIR, 'integration-test.plugin.js');
@@ -94,8 +94,8 @@ describe('PluginRegistry Integration', () => {
 
   it('handles multiple plugins in one directory', async () => {
     const manifests = [
-      { name: 'plugin-a', version: '1.0.0', adapter: 'test', cli_names: ['cli-a'], apiVersion: '1.0' },
-      { name: 'plugin-b', version: '1.0.0', adapter: 'test', cli_names: ['cli-b'], apiVersion: '1.0' },
+      { name: 'plugin-a', version: '1.0.0', adapter: 'test', cli_names: ['cli-a'], apiVersion: '1.0.0' },
+      { name: 'plugin-b', version: '1.0.0', adapter: 'test', cli_names: ['cli-b'], apiVersion: '1.0.0' },
     ];
 
     manifests.forEach(manifest => {
@@ -121,7 +121,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['valid-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'valid.plugin.json'), JSON.stringify(validManifest));
     fs.writeFileSync(join(TEST_DIR, 'valid.plugin.js'), generatePluginCode({ name: 'test' }));
@@ -150,7 +150,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['my-cli', 'other-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'my-plugin.plugin.json'), JSON.stringify(manifest));
     fs.writeFileSync(join(TEST_DIR, 'my-plugin.plugin.js'), generatePluginCode({ name: 'test' }));
@@ -183,7 +183,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'gemini',
       cli_names: ['gemini-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'gemini-plugin.plugin.json'), JSON.stringify(manifest));
     fs.writeFileSync(join(TEST_DIR, 'gemini-plugin.plugin.js'), generatePluginCode({ name: 'gemini' }));
@@ -209,7 +209,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['hook-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'hook-test.plugin.json'), JSON.stringify(manifest));
 
@@ -271,7 +271,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['cli-a'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
       dependencies: ['dep-b'],
     };
     fs.writeFileSync(join(TEST_DIR, 'dep-a.plugin.json'), JSON.stringify(manifestA));
@@ -282,7 +282,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['cli-b'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
       dependencies: ['dep-a'],
     };
     fs.writeFileSync(join(TEST_DIR, 'dep-b.plugin.json'), JSON.stringify(manifestB));
@@ -311,7 +311,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['timeout-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'timeout-test.plugin.json'), JSON.stringify(manifest));
 
@@ -349,7 +349,7 @@ describe('PluginRegistry Integration', () => {
       version: '1.0.0',
       adapter: 'test',
       cli_names: ['unload-cli'],
-      apiVersion: '1.0',
+      apiVersion: '1.0.0',
     };
     fs.writeFileSync(join(TEST_DIR, 'unload-test.plugin.json'), JSON.stringify(manifest));
 

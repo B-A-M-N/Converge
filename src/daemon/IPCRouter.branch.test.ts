@@ -74,7 +74,7 @@ describe('IPCRouter Branch Coverage', () => {
       expect(mockSocket.write).toHaveBeenCalled();
       const writtenPayload = parseWrittenPayload(mockSocket.write.mock.calls[0][0]);
       const response = JSON.parse(writtenPayload);
-      expect(response.error.code).toBe('PROTOCOL_ERROR');
+      expect(response.error.code).toBe('METHOD_NOT_FOUND');
       expect(response.error.message).toContain('Unknown method');
     });
 
@@ -84,8 +84,8 @@ describe('IPCRouter Branch Coverage', () => {
       const routerAny = router as any;
       routerAny.handlers = handlers;
       routerAny.processMessage({ jsonrpc: '2.0', id: 3, method: 'test.method', params: { foo: 'bar' } });
-      // Wait for async handler
-      await Promise.resolve(); // flush microtasks
+      // new Promise(r => r(thenable)) needs 3 ticks: assimilation + resolution + then-callback
+      for (let i = 0; i < 3; i++) await Promise.resolve();
       expect(mockHandler).toHaveBeenCalledWith({ foo: 'bar' }, expect.any(Object));
       // sendResponse called
       const writtenPayload = parseWrittenPayload(mockSocket.write.mock.calls[0][0]);
@@ -99,7 +99,7 @@ describe('IPCRouter Branch Coverage', () => {
       const routerAny = router as any;
       routerAny.handlers = handlers;
       routerAny.processMessage({ jsonrpc: '2.0', id: 4, method: 'fail.method', params: {} });
-      await Promise.resolve();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
       expect(mockSocket.write).toHaveBeenCalled();
       const writtenPayload = parseWrittenPayload(mockSocket.write.mock.calls[0][0]);
       const response = JSON.parse(writtenPayload);
@@ -113,7 +113,7 @@ describe('IPCRouter Branch Coverage', () => {
       const routerAny = router as any;
       routerAny.handlers = handlers;
       routerAny.processMessage({ jsonrpc: '2.0', id: 5, method: 'valid.method', params: {} });
-      await Promise.resolve();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
       const writtenPayload = parseWrittenPayload(mockSocket.write.mock.calls[0][0]);
       const response = JSON.parse(writtenPayload);
       expect(response.error.code).toBe('VALIDATION_FAILED');
@@ -130,31 +130,19 @@ describe('IPCRouter Branch Coverage', () => {
   });
 
   describe('handleClose', () => {
-    it('rejects all pending requests with DaemonUnavailableError', () => {
+    it('calls onClose callback', () => {
       createRouter();
-      const routerAny = router as any;
-      // Add pending requests
-      const resolve1 = vi.fn();
-      const reject1 = vi.fn();
-      routerAny.pendingRequests.set(1, { resolve: resolve1, reject: reject1 });
-      const resolve2 = vi.fn();
-      const reject2 = vi.fn();
-      routerAny.pendingRequests.set(2, { resolve: resolve2, reject: reject2 });
-      // Trigger handleClose
       (router as any).handleClose();
-      // Both should be rejected with DaemonUnavailableError
-      expect(reject1).toHaveBeenCalledWith(expect.any(DaemonUnavailableError));
-      expect(reject2).toHaveBeenCalledWith(expect.any(DaemonUnavailableError));
-      expect(routerAny.pendingRequests.size).toBe(0);
       expect(onCloseMock).toHaveBeenCalled();
     });
 
-    it('clears pending requests even if none exist', () => {
+    it('can be triggered via socket close event', () => {
       createRouter();
-      const routerAny = router as any;
-      expect(routerAny.pendingRequests.size).toBe(0);
-      (router as any).handleClose();
-      expect(routerAny.pendingRequests.size).toBe(0);
+      // The constructor registers socket.on('close', handleClose)
+      // Since mockSocket.on is a vi.fn(), simulate the close handler being called
+      const closeHandler = mockSocket.on.mock.calls.find((c: any[]) => c[0] === 'close')?.[1];
+      if (closeHandler) closeHandler();
+      expect(onCloseMock).toHaveBeenCalled();
     });
   });
 

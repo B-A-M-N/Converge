@@ -61,7 +61,7 @@ describe('KILL TEST: Atomicity Break', () => {
       // Verify that there is NO RUN_STARTED event for the orphaned run
       const orphanEventCount = db.prepare(`
         SELECT COUNT(*) as c FROM events
-        WHERE run_id = ? AND type = 'RUN_STARTED'
+        WHERE run_id = ? AND event_type = 'RUN_STARTED'
       `).get(orphanRunId) as { c: number };
       expect(orphanEventCount.c).toBe(0);
 
@@ -69,7 +69,7 @@ describe('KILL TEST: Atomicity Break', () => {
       // The orphan is intentional; we just ensure no other such anomalies exist
       const anomalyCount = db.prepare(`
         SELECT COUNT(*) as c FROM runs r
-        LEFT JOIN events e ON r.id = e.run_id AND e.type = 'RUN_STARTED'
+        LEFT JOIN events e ON r.id = e.run_id AND e.event_type = 'RUN_STARTED'
         WHERE r.job_id = ? AND e.id IS NULL
       `).get(job.id) as { c: number };
       // anomalyCount should be 1 (the orphan), and no more

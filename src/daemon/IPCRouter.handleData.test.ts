@@ -79,16 +79,17 @@ describe('IPCRouter handleData branch coverage', () => {
 
     it('returns when payload incomplete (waits for more data)', () => {
       createRouter();
-      // Send length prefix + partial payload (only 2 bytes of payload)
-      const payload = Buffer.from('{"');
-      const frame = Buffer.alloc(4 + payload.length);
-      frame.writeUInt32BE(payload.length, 0);
-      payload.copy(frame, 4);
+      // Send length prefix claiming 100-byte body, but only provide 2 bytes of body
+      const claimedLength = 100;
+      const partialBody = Buffer.from('{"');
+      const frame = Buffer.alloc(4 + partialBody.length);
+      frame.writeUInt32BE(claimedLength, 0); // header says 100 bytes
+      partialBody.copy(frame, 4);            // only 2 bytes provided
       (router as any).handleData(frame);
-      // Should not have responded yet
+      // Should not have responded yet — waiting for rest of body
       expect(mockSocket.write).not.toHaveBeenCalled();
       const routerAny = router as any;
-      expect(routerAny.buffer.length).toBe(4 + payload.length);
+      expect(routerAny.buffer.length).toBe(4 + partialBody.length);
     });
 
     it('processes multiple frames in one packet', () => {

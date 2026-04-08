@@ -12,7 +12,7 @@ export const normalizedRunOutputSchema = z.object({
   stdout: z.string(),
   stderr: z.string(),
   assistantSummary: z.string().optional().default(SENTINEL_SUMMARY),
-  sessionId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional().default(null),
   markers: z.array(z.string()).optional().default(SENTINEL_ARRAY),
   filesChanged: z.array(z.string()).optional().default(SENTINEL_ARRAY),
   retrySuggested: z.boolean().optional().default(SENTINEL_BOOL),
@@ -62,7 +62,7 @@ export function extractJSONBlocks(stdout: string): Record<string, unknown>[] {
 }
 
 export function extractSessionId(stdout: string): string | null {
-  const sessionRegex = /session[_-]?id[:\s]+([a-zA-Z0-9_-]+)/i;
+  const sessionRegex = /session[\s_-]?id[:\s]+([a-zA-Z0-9_-]+)/i;
   const match = stdout.match(sessionRegex);
   return match ? match[1] : null;
 }

@@ -292,20 +292,24 @@ export class PluginRegistry {
    * Returns null if no adapter found.
    */
   resolveAdapterForCLI(cliName: string): AgentAdapter | null {
-    // 1. Built-in adapters (from registry)
-    const allBuiltIn = listAdapters();
-    const builtInMatch = allBuiltIn.find((a: string) => a === cliName);
-    if (builtInMatch) {
-      return getAdapter(builtInMatch) ?? null;
+    // 1. Direct built-in adapter match (name === cliName)
+    const directBuiltIn = getAdapter(cliName);
+    if (directBuiltIn) {
+      return directBuiltIn;
     }
 
     // 2. Plugin adapters (only loaded ones)
-    for (const [name, meta] of this.plugins) {
+    // If the plugin's referenced adapter is a built-in, return the built-in (priority)
+    for (const [, meta] of this.plugins) {
       if (meta.status !== 'loaded') {
         continue;
       }
       const match = meta.manifest.cli_names.find((c) => c === cliName);
       if (match) {
+        const referencedBuiltIn = getAdapter(meta.manifest.adapter);
+        if (referencedBuiltIn) {
+          return referencedBuiltIn;
+        }
         return meta.adapterInstance;
       }
     }
@@ -419,7 +423,7 @@ export class PluginRegistry {
     if (!manifest.apiVersion) {
       errors.push('Missing required field: apiVersion');
     } else {
-      const DAEMON_API_VERSION = '1.0';
+      const DAEMON_API_VERSION = '1.0.0';
       const pluginMajor = major(manifest.apiVersion) as number;
       const daemonMajor = major(DAEMON_API_VERSION) as number;
       if (pluginMajor !== daemonMajor) {
@@ -460,7 +464,7 @@ export class PluginRegistry {
 
     return {
       manifest,
-      modulePath: path, // will be replaced after import resolution in loadPlugin
+      modulePath: path.replace(/\.plugin\.json$/, '.plugin.js'),
       hooks: {},
       adapterInstance: null as any, // placeholder, set during loadPlugin
       status: 'pending',

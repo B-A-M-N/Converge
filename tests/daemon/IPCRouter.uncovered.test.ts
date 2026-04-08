@@ -35,17 +35,19 @@ describe('IPCRouter uncovered paths', () => {
   });
 
   it('shutdown destroys the socket', () => {
-    (socket as any).destroy = vi.fn();
-    // Trigger shutdown by ending the socket
-    (socket.end as any)();
-    expect(socket.destroy as any).toHaveBeenCalled();
+    router.shutdown();
+    expect(socket.destroy).toHaveBeenCalled();
   });
 
-  it('handleRequest with empty method returns PROTOCOL_ERROR', async () => {
-    // Access private method via type assertion hack
+  it('processMessage with empty method returns PROTOCOL_ERROR', async () => {
     const anyRouter = router as any;
-    await expect(anyRouter.handleRequest({ jsonrpc: '2.0', id: 1, method: '', params: {} }))
-      .rejects.toMatchObject({ code: 'PROTOCOL_ERROR' });
-    expect(socket.write).toHaveBeenCalled(); // error response sent
+    anyRouter.handshakeComplete = true;
+    anyRouter.processMessage({ jsonrpc: '2.0', id: 1, method: '', params: {} });
+    expect(socket.write).toHaveBeenCalled();
+    // Parse the written frame to verify it's an error response
+    const frame = socket.write.mock.calls[0][0] as Buffer;
+    const len = frame.readUInt32BE(0);
+    const body = JSON.parse(frame.subarray(4, 4 + len).toString());
+    expect(body.error.code).toBe('PROTOCOL_ERROR');
   });
 });

@@ -66,6 +66,12 @@ export class ClaudeAdapter implements CliAdapter {
     command: CliAdapterCommand,
     actor: Actor
   ): Promise<CliAdapterResponse> {
+    if (!actor?.actorId) {
+      return {
+        status: 'error',
+        message: 'Actor identity is required for this operation',
+      };
+    }
     const handler = COMMAND_MAP[command.name];
     if (!handler) {
       return {

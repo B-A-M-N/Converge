@@ -24,9 +24,10 @@ interface IPCRouterOptions {
 
 function encodeFrame(payload: JsonRpcResponse | JsonRpcNotification): Buffer {
   const json = JSON.stringify(payload);
+  const body = Buffer.from(json, 'utf8');
   const header = Buffer.alloc(4);
-  header.writeUInt32BE(json.length);
-  return Buffer.concat([header, Buffer.from(json)]);
+  header.writeUInt32BE(body.length);
+  return Buffer.concat([header, body]);
 }
 
 function encodeErrorFrame(id: number, code: string, message?: string): Buffer {
@@ -39,7 +40,7 @@ function encodeErrorFrame(id: number, code: string, message?: string): Buffer {
 }
 
 export class IPCRouter {
-  private socket: net.Socket;
+  socket: net.Socket;
   private buffer: Buffer = Buffer.alloc(0);
   private serverVersion: string;
   private serverCapabilities: string[];
@@ -60,6 +61,10 @@ export class IPCRouter {
 
   registerHandler(method: string, handler: (params: any, socket: net.Socket) => Promise<any> | any): void {
     this.handlers.set(method, handler);
+  }
+
+  shutdown(): void {
+    this.socket.destroy();
   }
 
   private handleData(data: Buffer): void {
@@ -90,37 +95,48 @@ export class IPCRouter {
         return;
       }
 
-      if (!msg.method) {
-        this.sendError(msg.id || 0, 'PROTOCOL_ERROR');
-        continue;
-      }
-      if (typeof msg.method !== 'string') {
-        this.sendError(msg.id || 0, 'PROTOCOL_ERROR');
-        continue;
-      }
-
-      const handler = this.handlers.get(msg.method);
-      if (!handler) {
-        this.sendError(msg.id, 'METHOD_NOT_FOUND', `Unknown method: ${msg.method}`);
-        continue;
-      }
-
-      Promise.resolve(handler(msg.params || {}, this.socket))
-        .then((result: any) => {
-          this.sendResult(msg.id, result);
-        })
-        .catch((e: Error) => {
-          if (e instanceof IncompatibleVersionError) {
-            this.sendError(msg.id, 'INCOMPATIBLE_VERSION', e.message);
-          } else if (e instanceof ProtocolError) {
-            this.sendError(msg.id, 'PROTOCOL_ERROR', e.message);
-          } else if (e instanceof DaemonUnavailableError) {
-            this.sendError(msg.id, 'DAEMON_UNAVAILABLE', e.message);
-          } else {
-            this.sendError(msg.id, 'INTERNAL_ERROR', e.message);
-          }
-        });
+      this.processMessage(msg);
     }
+  }
+
+  processMessage(msg: any): void {
+    if (!msg.method) {
+      this.sendError(msg.id || 0, 'PROTOCOL_ERROR');
+      return;
+    }
+    if (typeof msg.method !== 'string') {
+      this.sendError(msg.id || 0, 'PROTOCOL_ERROR');
+      return;
+    }
+
+    // Treat messages without id as notifications (no response)
+    if (msg.id === undefined || msg.id === null) {
+      return;
+    }
+
+    const handler = this.handlers.get(msg.method);
+    if (!handler) {
+      this.sendError(msg.id, 'METHOD_NOT_FOUND', `Unknown method: ${msg.method}`);
+      return;
+    }
+
+    new Promise<any>((resolve) => resolve(handler(msg.params || {}, this.socket)))
+      .then((result: any) => {
+        this.sendResult(msg.id, result);
+      })
+      .catch((e: any) => {
+        if (e instanceof IncompatibleVersionError) {
+          this.sendError(msg.id, 'INCOMPATIBLE_VERSION', e.message);
+        } else if (e instanceof ProtocolError) {
+          this.sendError(msg.id, 'PROTOCOL_ERROR', e.message);
+        } else if (e instanceof DaemonUnavailableError) {
+          this.sendError(msg.id, 'DAEMON_UNAVAILABLE', e.message);
+        } else if (e && e.code) {
+          this.sendError(msg.id, e.code, e.message);
+        } else {
+          this.sendError(msg.id, 'INTERNAL_ERROR', e instanceof Error ? e.message : String(e));
+        }
+      });
   }
 
   private _handleHandshake(msg: any): void {
